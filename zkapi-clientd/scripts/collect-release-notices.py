@@ -56,6 +56,9 @@ for name, module in sorted(modules.items()):
     collect(name, module["Version"], module["Dir"], source="https://" + name)
 go_version = command(["go", "version"]).strip()
 collect("Go", go_version.split()[2], command(["go", "env", "GOROOT"]).strip(), "BSD-3-Clause", "https://go.dev/")
+collect("AnOversizedMooseWithSocks/leCore", "5cef1aec",
+        repo / "zkapi-clientd/internal/lecore", "MIT",
+        "https://github.com/AnOversizedMooseWithSocks/leCore/tree/5cef1aec")
 
 rust_version = command(["rustc", "-vV"])
 host = next(line.split(": ", 1)[1] for line in rust_version.splitlines() if line.startswith("host: "))
@@ -78,7 +81,8 @@ for identifier in sorted(visited):
 
 (notices / "dependencies.json").write_text(json.dumps(records, indent=2, sort_keys=True) + "\n")
 (notices / "README.txt").write_text(
-    "This directory preserves license/notice texts supplied with resolved Go and Rust build dependencies.\n"
+    "This directory preserves license/notice texts for resolved Go and Rust build dependencies\n"
+    "and the locally adapted leCore retrieval code.\n"
     "dependencies.json records upstream license declarations and source references.\n"
     "The OA ZKAPI companion and protocol declare MIT OR Apache-2.0 in their Cargo manifests;\n"
     "their pinned source trees do not provide top-level license text files. Those declarations\n"

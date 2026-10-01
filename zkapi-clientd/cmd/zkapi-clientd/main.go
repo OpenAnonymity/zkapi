@@ -287,6 +287,7 @@ func serveSnapshot(ctx context.Context, dir string, c, expected config.Config, o
 		return err
 	}
 	api.RequireAPIKey = c.RequireAPIKey
+	api.LeCoreContextRecall = c.LeCoreContextRecall
 	api.Status = server.ServiceStatus{Backend: c.Backend}
 	api.Status.Network = c.ZKAPI.Network
 	api.Status.RequestBudgetPolicy = "model"
@@ -305,6 +306,9 @@ func serveSnapshot(ctx context.Context, dir string, c, expected config.Config, o
 	}
 	logger.Printf("zkAPI client %s listening at http://%s/v1 (%s); %s", version, c.Listen, c.Backend, transport)
 	logger.Printf("zkAPI network: %s", c.ZKAPI.Network)
+	if c.LeCoreContextRecall {
+		logger.Print("OpenZoo leCore context recall enabled for long text requests")
+	}
 	if c.RequireAPIKey {
 		logger.Print("Use zkapi-clientd config --api-key to configure your client; Ctrl+C stops the service")
 	} else {

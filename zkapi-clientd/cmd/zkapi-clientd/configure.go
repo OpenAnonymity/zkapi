@@ -16,11 +16,11 @@ import (
 type configureAction func(context.Context, string, config.Config, string, setupPrompter, io.Writer) error
 
 type configureOptions struct {
-	network, listen, relay, binary, proofs    string
-	usd                                       string
-	keyReuseWindowSeconds                     int
-	status, apiKey, edit, menu, requireAPIKey bool
-	fields                                    map[string]bool
+	network, listen, relay, binary, proofs                         string
+	usd                                                            string
+	keyReuseWindowSeconds                                          int
+	status, apiKey, edit, menu, requireAPIKey, leCoreContextRecall bool
+	fields                                                         map[string]bool
 }
 
 func parseConfigureOptions(args []string, out io.Writer) (configureOptions, error) {
@@ -36,6 +36,7 @@ func parseConfigureOptions(args []string, out io.Writer) (configureOptions, erro
 	f.BoolVar(&o.status, "status", false, "show saved configuration status without setup")
 	f.BoolVar(&o.apiKey, "api-key", false, "print the local inference API key explicitly")
 	f.IntVar(&o.keyReuseWindowSeconds, "key-reuse-window-seconds", config.DefaultKeyReuseWindowSeconds, "fixed ephemeral key reuse window (default 60 seconds; 1-300 shares keys across chats and local clients; 0 uses a fresh key per inference request)")
+	f.BoolVar(&o.leCoreContextRecall, "lecore-context-recall", false, "use local leCore context recall before paid inference (default: off)")
 	f.BoolVar(&o.requireAPIKey, "require-api-key", false, "require a local API key for inference (default: no key required)")
 	f.BoolVar(&o.edit, "edit", false, "edit network, listener, and transport interactively")
 	f.BoolVar(&o.menu, "menu", false, "open configuration and wallet management actions")
@@ -240,6 +241,9 @@ func applyConfigureOptions(c config.Config, o configureOptions) config.Config {
 	if o.fields["key-reuse-window-seconds"] {
 		c.KeyReuseWindowSeconds = o.keyReuseWindowSeconds
 	}
+	if o.fields["lecore-context-recall"] {
+		c.LeCoreContextRecall = o.leCoreContextRecall
+	}
 	if o.fields["require-api-key"] {
 		c.RequireAPIKey = o.requireAPIKey
 	}
@@ -264,6 +268,11 @@ func showConfigureSummary(c config.Config, ui setupPrompter) {
 		transport = "Wisp relay enabled"
 	}
 	ui.Printf("Configuration: saved.\nzkAPI network: %s\nTransport: %s\n", c.ZKAPI.Network, transport)
+	if c.LeCoreContextRecall {
+		ui.Printf("leCore context recall: enabled locally; the processed request still uses paid provider inference.\n")
+	} else {
+		ui.Printf("leCore context recall: off. Enable with zkapi-clientd config --lecore-context-recall.\n")
+	}
 	showClientConnection(c, ui)
 	if c.KeyReuseWindowSeconds == 0 {
 		ui.Printf("Ephemeral key reuse: disabled; fresh key per inference request. New keys may wait for earlier settlement.\n")

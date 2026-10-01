@@ -14,6 +14,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ethereum/zkapi/zkapi-clientd/internal/lecore"
 )
 
 type Backend interface {
@@ -36,6 +38,9 @@ type API struct {
 	key     [32]byte
 	slots   chan struct{}
 	pending chan struct{}
+	// LeCoreContextRecall selects relevant older text locally before paid
+	// inference. It is off unless the owner enables it in the daemon profile.
+	LeCoreContextRecall bool
 	// RequireAPIKey opts into bearer authentication for inference routes. Local
 	// management always requires its credentials, regardless of this setting.
 	RequireAPIKey bool
@@ -262,6 +267,9 @@ func (a *API) complete(w http.ResponseWriter, r *http.Request) {
 	if ctx.Err() != nil {
 		writeError(w, 408, "request_cancelled", "The request was canceled while waiting for inference.")
 		return
+	}
+	if a.LeCoreContextRecall {
+		clean, _ = lecore.Optimize(clean)
 	}
 	response, err := a.backend.Complete(ctx, clean)
 	if err != nil {
