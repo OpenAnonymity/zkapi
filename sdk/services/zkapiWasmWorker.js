@@ -25,6 +25,11 @@ async function ensureInitialized() {
                 throw new Error('The loaded proof WASM uses an incompatible circuit revision.');
             }
             return result;
+        }).catch(error => {
+            // A failed download must not poison later wallet operations. Share
+            // the in-flight attempt, but allow the next message to retry it.
+            initialized = null;
+            throw error;
         });
     }
     return initialized;
