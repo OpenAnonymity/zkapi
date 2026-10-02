@@ -461,6 +461,7 @@ fn build_error_response(
     let status_code = match err {
         ServerError::InvalidProof(_)
         | ServerError::InvalidRequest(_)
+        | ServerError::OaKeyPolicyRejected
         | ServerError::ProtocolMismatch(_) => StatusCode::BAD_REQUEST,
         ServerError::StaleRoot { .. }
         | ServerError::NativeQuoteExpired

@@ -18,6 +18,9 @@ func TestInitPrivateAndNeverClobbers(t *testing.T) {
 	if c.RelayURL != "" || c.LeCoreContextRecall {
 		t.Fatal("default configuration enabled optional request processing")
 	}
+	if c.ZKAPI.Network != "mainnet" || c.VerifierURL != mainnetVerifierURL {
+		t.Fatal("new Mainnet profile did not select the production verifier")
+	}
 	dir := filepath.Join(t.TempDir(), "config")
 	if err := Init(dir, c); err != nil {
 		t.Fatal(err)
@@ -77,6 +80,99 @@ func TestLeCoreContextRecallProfileRoundTrip(t *testing.T) {
 	loaded, err = Load(dir)
 	if err != nil || loaded.LeCoreContextRecall {
 		t.Fatal("recall opt-out did not persist", err)
+	}
+}
+
+func TestLoadRotatesOnlyFormerMainnetDefaultVerifier(t *testing.T) {
+	for _, test := range []struct {
+		name, network, saved, want string
+	}{
+		{"old-mainnet", "mainnet", sepoliaVerifierURL, mainnetVerifierURL},
+		{"old-mainnet-slash", "mainnet", sepoliaVerifierURL + "/", mainnetVerifierURL},
+		{"production-mainnet", "mainnet", mainnetVerifierURL, mainnetVerifierURL},
+		{"sepolia", "sepolia", sepoliaVerifierURL, sepoliaVerifierURL},
+		{"sepolia-slash", "sepolia", sepoliaVerifierURL + "/", sepoliaVerifierURL + "/"},
+		{"custom-mainnet", "mainnet", "https://verifier.example", "https://verifier.example"},
+		{"custom-sepolia", "sepolia", "https://verifier.example/", "https://verifier.example/"},
+		{"custom-port", "mainnet", sepoliaVerifierURL + ":8443", sepoliaVerifierURL + ":8443"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, err := Default()
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.ZKAPI.Network, c.VerifierURL = test.network, test.saved
+			c.OrgURL = "https://legacy-unused-org.example"
+			dir := filepath.Join(t.TempDir(), "profile")
+			if err := Init(dir, c); err != nil {
+				t.Fatal(err)
+			}
+			path := filepath.Join(dir, "config.json")
+			before, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			walletPath := filepath.Join(dir, "wallet-recovery-fixture")
+			wallet := []byte("private saved wallet and recovery remain unchanged")
+			if err := os.WriteFile(walletPath, wallet, 0600); err != nil {
+				t.Fatal(err)
+			}
+			loaded, err := Load(dir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			expected := c
+			expected.VerifierURL, expected.ManagementToken = test.want, loaded.ManagementToken
+			if loaded != expected {
+				t.Fatal("loading changed profile fields other than the reviewed verifier rotation")
+			}
+			after, err := os.ReadFile(path)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatal("load rewrote saved configuration", err)
+			}
+			walletAfter, err := os.ReadFile(walletPath)
+			if err != nil || !bytes.Equal(wallet, walletAfter) {
+				t.Fatal("load changed wallet recovery", err)
+			}
+			// A normal edit must accept the migrated snapshot and keep its
+			// credentials; this is also where the new verifier is persisted.
+			next := loaded
+			next.Listen = "127.0.0.1:9876"
+			if err := Update(dir, loaded, next); err != nil {
+				t.Fatal("could not edit migrated profile", err)
+			}
+			again, err := Load(dir)
+			if err != nil || again != next {
+				t.Fatal("edited profile changed on reload", err)
+			}
+		})
+	}
+}
+
+func TestSelectNetworkPreservesCustomVerifier(t *testing.T) {
+	for _, test := range []struct {
+		name, from, verifier, to, want string
+	}{
+		{"mainnet-to-sepolia", "mainnet", mainnetVerifierURL, "sepolia", sepoliaVerifierURL},
+		{"sepolia-to-mainnet", "sepolia", sepoliaVerifierURL, "mainnet", mainnetVerifierURL},
+		{"legacy-mainnet", "mainnet", sepoliaVerifierURL, "mainnet", mainnetVerifierURL},
+		{"slash-default", "sepolia", sepoliaVerifierURL + "/", "mainnet", mainnetVerifierURL},
+		{"custom", "mainnet", "https://verifier.example", "sepolia", "https://verifier.example"},
+		{"explicit-production-on-sepolia", "sepolia", mainnetVerifierURL, "mainnet", mainnetVerifierURL},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			c, err := Default()
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.ZKAPI.Network, c.VerifierURL = test.from, test.verifier
+			selected := SelectNetwork(c, test.to)
+			want := c
+			want.ZKAPI.Network, want.VerifierURL = test.to, test.want
+			if selected != want {
+				t.Fatal("network selection changed unrelated profile fields or used the wrong verifier")
+			}
+		})
 	}
 }
 

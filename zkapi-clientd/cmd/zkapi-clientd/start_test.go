@@ -73,7 +73,7 @@ func startTestConfig(t *testing.T) (string, config.Config) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	c.Backend, c.ZKAPI.Network = "zkapi", "sepolia"
+	c = config.SelectNetwork(c, "sepolia")
 	if err := config.Init(dir, c); err != nil {
 		t.Fatal(err)
 	}

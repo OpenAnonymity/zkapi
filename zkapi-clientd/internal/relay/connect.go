@@ -15,7 +15,7 @@ import (
 	"time"
 )
 
-// ConnectProxy gives the Rust prover the same direct or Wisp route as Go while
+// ConnectProxy gives the Rust prover the same direct, Wisp, or SOCKS5 route as Go while
 // enforcing HTTPS-only access. It accepts authenticated CONNECT only, and
 // neither sees nor terminates the destination's TLS session.
 type ConnectProxy struct {

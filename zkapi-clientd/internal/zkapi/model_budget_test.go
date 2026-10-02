@@ -24,7 +24,7 @@ func addTestModelPolicy(c *Client, prices map[string]uint64, disabled []string) 
 		disabled = []string{}
 	}
 	c.inference.Transport = budgetTransport(func(r *http.Request) (*http.Response, error) {
-		if r.URL.Host == "org-staging.openanonymity.ai" {
+		if r.URL.Host == "org-live.openanonymity.ai" || r.URL.Host == "org-staging.openanonymity.ai" {
 			var value any = prices
 			if r.URL.Path == "/chat/pinned-models" {
 				value = map[string]any{"disabled_models": disabled}
@@ -109,11 +109,15 @@ func TestModelsUsePinnedAnonymousPolicyAndHideDisabledOrUnreviewedModels(t *test
 		t.Run(network, func(t *testing.T) {
 			var calls atomic.Int32
 			jar, _ := cookiejar.New(nil)
-			origin, _ := url.Parse("https://org-staging.openanonymity.ai")
+			issuerHost := "org-live.openanonymity.ai"
+			if network == "sepolia" {
+				issuerHost = "org-staging.openanonymity.ai"
+			}
+			origin, _ := url.Parse("https://" + issuerHost)
 			jar.SetCookies(origin, []*http.Cookie{{Name: "identity", Value: "private-account"}})
 			remote := &http.Client{Jar: jar, Transport: budgetTransport(func(r *http.Request) (*http.Response, error) {
 				calls.Add(1)
-				if r.URL.Scheme != "https" || (r.URL.Host != "org-staging.openanonymity.ai" && r.URL.Host != "openrouter.ai") || r.Method != "GET" || r.URL.RawQuery != "" || r.Body != nil {
+				if r.URL.Scheme != "https" || (r.URL.Host != issuerHost && r.URL.Host != "openrouter.ai") || r.Method != "GET" || r.URL.RawQuery != "" || r.Body != nil {
 					t.Errorf("unexpected public policy request %s", r.URL)
 				}
 				for _, header := range []string{"Authorization", "Cookie", "Proxy-Authorization", "HTTP-Referer", "X-Title"} {

@@ -20,6 +20,7 @@ pub mod settlement;
 pub mod signer;
 pub mod testnet_auth;
 pub mod watcher;
+mod writer_lock;
 
 #[cfg(test)]
 pub(crate) mod test_support;

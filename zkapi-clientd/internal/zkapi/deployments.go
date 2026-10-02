@@ -29,7 +29,8 @@ type deploymentIdentity struct {
 	Unit     string             `json:"billing_unit"`
 	Proof    proofSetupIdentity `json:"proof_setup"`
 	Privacy  struct {
-		IssuerURL string `json:"issuer_url"`
+		IssuerURL   string `json:"issuer_url"`
+		VerifierURL string `json:"verifier_url"`
 	} `json:"privacy_mode"`
 }
 
@@ -79,7 +80,7 @@ func writeDeploymentManifest(dir string, raw []byte) (string, error) {
 		if bytes.Equal(saved, raw) {
 			return path, nil
 		}
-		if !isSepoliaOriginMigration(saved, raw) {
+		if !isSepoliaOriginMigration(saved, raw) && !isMainnetIssuerMigration(saved, raw) {
 			return "", errors.New("deployment manifest does not match this client's pinned configuration")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -118,6 +119,16 @@ const canonicalSepoliaManifestSHA256 = "d7b4f21cc54df41c72fc577c70e1e528f487da34
 
 func isSepoliaOriginMigration(saved, packaged []byte) bool {
 	return matchesManifestMigration(saved, packaged, previousSepoliaManifestSHA256, canonicalSepoliaManifestSHA256)
+}
+
+// This reviewed Mainnet pair changes only the OA issuer and verifier origins.
+// Exact hashes prevent the exception from rebinding a wallet, signing key,
+// proving setup, protocol endpoint or any other manifest field.
+const previousMainnetManifestSHA256 = "68402170b26a77dae6af3eaf7ce6a5b58ff61e7ed2d6d8eace7164304d2bdd7d"
+const productionMainnetManifestSHA256 = "95d784e5039c26109ec58fff971a109cc4466da924992d9a53b87b5dddb37fb6"
+
+func isMainnetIssuerMigration(saved, packaged []byte) bool {
+	return matchesManifestMigration(saved, packaged, previousMainnetManifestSHA256, productionMainnetManifestSHA256)
 }
 
 func matchesManifestMigration(saved, packaged []byte, sourceSHA256, targetSHA256 string) bool {

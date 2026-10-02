@@ -1,0 +1,9 @@
+{
+  "tag": "clientd-v0.1.6",
+  "artifacts": {
+    "zkapi-clientd_0.1.6_darwin_amd64.tar.gz": "ac9bb3f0f64c3f9c5c271291f38065cb1b008b5d8b2eb5e998ea9b615fc54a12",
+    "zkapi-clientd_0.1.6_darwin_arm64.tar.gz": "0e045245332fbe5d832d73f4ec1633bada2a5058032dd137b9e447f83bdc86c4",
+    "zkapi-clientd_0.1.6_linux_amd64.tar.gz": "41f9df6c24fd1e1491bc21fcc5be89289525c01f5a850bd64326a85152bbff95",
+    "zkapi-clientd_0.1.6_linux_arm64.tar.gz": "41549a752cdffdace74cdabd872ad71190d7509a9b307e54f5ee0e5f863b7cdf"
+  }
+}

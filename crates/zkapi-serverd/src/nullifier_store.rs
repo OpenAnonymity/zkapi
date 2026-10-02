@@ -3,7 +3,7 @@
 //! Stores nullifier reservations and finalized transcripts. Each nullifier
 //! progresses through: Reserved -> Finalized (or ClearanceReserved for withdrawals).
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use sha3::{Digest, Keccak256};
 use std::path::Path;
 use std::sync::Mutex;
@@ -42,6 +42,27 @@ pub struct TranscriptRecord {
     pub finalized_at: Option<u64>,
 }
 
+/// Whether an OA provisioning attempt can safely be cancelled without usage.
+/// An absent key hash does not establish non-issuance: the upstream response
+/// may have been lost after a key was created.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OaProvisioningOutcome {
+    NotStarted,
+    MayHaveIssued,
+    ConfirmedUnissued,
+}
+
+impl OaProvisioningOutcome {
+    fn from_db(value: &str) -> Self {
+        match value {
+            "not_started" => Self::NotStarted,
+            "confirmed_unissued" => Self::ConfirmedUnissued,
+            // Historical rows and unknown values must never enable a refund.
+            _ => Self::MayHaveIssued,
+        }
+    }
+}
+
 /// Durable metadata for one prompt-private OpenRouter lease. The plaintext
 /// runtime key is deliberately never stored.
 #[derive(Debug, Clone)]
@@ -54,6 +75,7 @@ pub struct OpenRouterLeaseRecord {
     pub oa_client_request_id: Option<String>,
     pub key_hash: Option<String>,
     pub key_source: String,
+    pub(crate) oa_provisioning_outcome: OaProvisioningOutcome,
     pub status: String,
     pub issued_at: u64,
     pub expires_at: u64,
@@ -121,6 +143,7 @@ impl NullifierStore {
                 oa_client_request_id TEXT,
                 key_hash TEXT UNIQUE,
                 key_source TEXT NOT NULL DEFAULT 'openrouter',
+                oa_provisioning_outcome TEXT NOT NULL DEFAULT 'may_have_issued',
                 status TEXT NOT NULL,
                 issued_at INTEGER NOT NULL,
                 expires_at INTEGER NOT NULL,
@@ -158,6 +181,7 @@ impl NullifierStore {
             "ALTER TABLE openrouter_leases ADD COLUMN oa_client_request_id TEXT",
             [],
         );
+        migrate_oa_provisioning_outcome(&conn)?;
         backfill_openrouter_request_bindings(&conn)?;
 
         Ok(Self {
@@ -168,6 +192,22 @@ impl NullifierStore {
     /// Create an in-memory store (for testing).
     pub fn in_memory() -> Result<Self, ServerError> {
         Self::new(":memory:")
+    }
+
+    /// Acquire the long-lived server writer lock for the actual SQLite file,
+    /// not a possibly different config path. In-memory test stores are exempt.
+    /// Ordinary store users such as the challenger do not acquire this lock.
+    pub(crate) fn acquire_writer_lock(
+        &self,
+    ) -> Result<Option<crate::writer_lock::ServerWriterLock>, ServerError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|error| ServerError::Database(format!("lock poisoned: {error}")))?;
+        match conn.path().filter(|path| !path.is_empty()) {
+            Some(path) => crate::writer_lock::ServerWriterLock::acquire(Path::new(path)).map(Some),
+            None => Ok(None),
+        }
     }
 
     /// Reserve a nullifier. Returns Ok(()) if the nullifier was successfully reserved.
@@ -461,8 +501,9 @@ impl NullifierStore {
         conn.execute(
             "INSERT INTO openrouter_leases (
                 client_request_id, request_nullifier, api_request_json, key_source, status,
-                issued_at, expires_at, settle_after, spending_limit_usd, updated_at, oa_client_request_id
-             ) VALUES (?1, ?2, ?3, ?4, 'provisioning', ?5, ?6, ?7, ?8, ?9, ?10)",
+                issued_at, expires_at, settle_after, spending_limit_usd, updated_at, oa_client_request_id,
+                oa_provisioning_outcome
+             ) VALUES (?1, ?2, ?3, ?4, 'provisioning', ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 request.client_request_id,
                 request.public_inputs.request_nullifier.to_hex(),
@@ -474,9 +515,90 @@ impl NullifierStore {
                 spending_limit_usd,
                 current_timestamp() as i64,
                 oa_client_request_id,
+                if key_source == "oa_org" { "not_started" } else { "may_have_issued" },
             ],
         )
         .map_err(|error| ServerError::Database(format!("lease insert failed: {error}")))?;
+        Ok(())
+    }
+
+    /// Durably fence upstream I/O before sending an OA issuance request. Only
+    /// the first attempt may establish confirmed non-issuance from a definitive
+    /// rejection; a retry cannot erase an earlier ambiguous result. The caller
+    /// must hold its issuance lock through the upstream call and classification.
+    pub(crate) fn begin_oa_issuance(&self, client_request_id: &str) -> Result<bool, ServerError> {
+        let mut conn = self
+            .conn
+            .lock()
+            .map_err(|error| ServerError::Database(format!("lock poisoned: {error}")))?;
+        let transaction = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| {
+                ServerError::Database(format!("OA issuance transaction failed: {error}"))
+            })?;
+        let prior = transaction
+            .query_row(
+                "SELECT oa_provisioning_outcome FROM openrouter_leases
+                 WHERE client_request_id = ?1 AND key_source = 'oa_org'
+                   AND status = 'provisioning' AND key_hash IS NULL",
+                params![client_request_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                ServerError::Database(format!("OA issuance state read failed: {error}"))
+            })?
+            .ok_or_else(|| ServerError::Internal("lease cannot begin OA issuance".to_string()))?;
+        let outcome = OaProvisioningOutcome::from_db(&prior);
+        if outcome == OaProvisioningOutcome::ConfirmedUnissued {
+            return Err(ServerError::Internal(
+                "confirmed unissued lease cannot resume issuance".to_string(),
+            ));
+        }
+        let rows = transaction
+            .execute(
+                "UPDATE openrouter_leases SET oa_provisioning_outcome = 'may_have_issued', updated_at = ?1
+                 WHERE client_request_id = ?2 AND key_source = 'oa_org'
+                   AND status = 'provisioning' AND key_hash IS NULL AND oa_provisioning_outcome = ?3",
+                params![current_timestamp() as i64, client_request_id, prior],
+            )
+            .map_err(|error| ServerError::Database(format!("OA issuance fence failed: {error}")))?;
+        if rows != 1 {
+            return Err(ServerError::Internal(
+                "OA issuance state changed".to_string(),
+            ));
+        }
+        transaction.commit().map_err(|error| {
+            ServerError::Database(format!("OA issuance commit failed: {error}"))
+        })?;
+        Ok(outcome == OaProvisioningOutcome::NotStarted)
+    }
+
+    /// Mark a first attempt's definitive pre-issuance rejection for zero-charge
+    /// recovery. This must never be called for an ambiguous or retried attempt.
+    pub(crate) fn confirm_oa_unissued(&self, client_request_id: &str) -> Result<(), ServerError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|error| ServerError::Database(format!("lock poisoned: {error}")))?;
+        let now = current_timestamp() as i64;
+        let rows = conn
+            .execute(
+                "UPDATE openrouter_leases SET oa_provisioning_outcome = 'confirmed_unissued',
+                    settle_after = ?1, updated_at = ?1
+                 WHERE client_request_id = ?2 AND key_source = 'oa_org'
+                   AND status = 'provisioning' AND key_hash IS NULL
+                   AND oa_provisioning_outcome = 'may_have_issued'",
+                params![now, client_request_id],
+            )
+            .map_err(|error| {
+                ServerError::Database(format!("OA non-issuance update failed: {error}"))
+            })?;
+        if rows != 1 {
+            return Err(ServerError::Internal(
+                "OA issuance state changed".to_string(),
+            ));
+        }
         Ok(())
     }
 
@@ -538,6 +660,46 @@ impl NullifierStore {
         Ok(())
     }
 
+    /// Recover an existing issuer binding atomically. No plaintext key is
+    /// stored, and a definitive non-issuance outcome can never become issued.
+    pub(crate) fn reconcile_oa_lease(
+        &self,
+        client_request_id: &str,
+        key_hash: &str,
+        expires_at: u64,
+        settle_after: u64,
+    ) -> Result<(), ServerError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|error| ServerError::Database(format!("lock poisoned: {error}")))?;
+        let rows = conn
+            .execute(
+                "UPDATE openrouter_leases SET
+                    status = 'active', key_hash = ?1, expires_at = ?2,
+                    settle_after = ?3, last_error = NULL, updated_at = ?4
+                 WHERE client_request_id = ?5 AND key_source = 'oa_org'
+                    AND status = 'provisioning' AND key_hash IS NULL
+                    AND oa_provisioning_outcome = 'may_have_issued'",
+                params![
+                    key_hash,
+                    expires_at as i64,
+                    settle_after as i64,
+                    current_timestamp() as i64,
+                    client_request_id
+                ],
+            )
+            .map_err(|error| {
+                ServerError::Database(format!("OA reconciliation update failed: {error}"))
+            })?;
+        if rows != 1 {
+            return Err(ServerError::Internal(
+                "OA reconciliation state changed".into(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn remove_failed_openrouter_lease(
         &self,
         client_request_id: &str,
@@ -577,7 +739,10 @@ impl NullifierStore {
         };
         let mut statement = match conn.prepare(
             "SELECT * FROM openrouter_leases
-             WHERE status IN ('active', 'retiring', 'disabled', 'revoking') AND settle_after <= ?1
+             WHERE (status IN ('active', 'retiring', 'disabled', 'revoking') AND settle_after <= ?1)
+                OR (key_source = 'oa_org' AND status = 'provisioning' AND key_hash IS NULL
+                    AND (oa_provisioning_outcome = 'confirmed_unissued'
+                         OR (oa_provisioning_outcome IN ('not_started', 'may_have_issued') AND settle_after <= ?1)))
              ORDER BY settle_after ASC",
         ) {
             Ok(statement) => statement,
@@ -601,7 +766,7 @@ impl NullifierStore {
             .map_err(|cause| ServerError::Database(format!("lock poisoned: {cause}")))?;
         conn.execute(
             "UPDATE openrouter_leases SET last_error = ?1, updated_at = ?2
-             WHERE client_request_id = ?3 AND status IN ('active', 'retiring', 'disabled', 'revoking')",
+             WHERE client_request_id = ?3 AND status IN ('provisioning', 'active', 'retiring', 'disabled', 'revoking')",
             params![error, current_timestamp() as i64, client_request_id],
         )
         .map_err(|cause| ServerError::Database(format!("lease error update failed: {cause}")))?;
@@ -672,6 +837,27 @@ impl NullifierStore {
         .map_err(|error| ServerError::Database(format!("lease finalize failed: {error}")))?;
         Ok(())
     }
+}
+
+fn migrate_oa_provisioning_outcome(conn: &Connection) -> Result<(), ServerError> {
+    let columns = conn
+        .prepare("PRAGMA table_info(openrouter_leases)")
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(1))?
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .map_err(|error| {
+            ServerError::Database(format!("OA outcome migration read failed: {error}"))
+        })?;
+    if !columns.iter().any(|name| name == "oa_provisioning_outcome") {
+        conn.execute(
+            "ALTER TABLE openrouter_leases ADD COLUMN oa_provisioning_outcome TEXT NOT NULL DEFAULT 'may_have_issued'",
+            [],
+        )
+        .map_err(|error| ServerError::Database(format!("OA outcome migration failed: {error}")))?;
+    }
+    Ok(())
 }
 
 /// Older lease rows already contain the complete original request. Use that
@@ -830,6 +1016,9 @@ fn row_to_openrouter_lease(row: &rusqlite::Row<'_>) -> rusqlite::Result<OpenRout
         oa_client_request_id: row.get("oa_client_request_id")?,
         key_hash: row.get("key_hash")?,
         key_source: row.get("key_source")?,
+        oa_provisioning_outcome: OaProvisioningOutcome::from_db(
+            &row.get::<_, String>("oa_provisioning_outcome")?,
+        ),
         status: row.get("status")?,
         issued_at: row.get::<_, i64>("issued_at")? as u64,
         expires_at: row.get::<_, i64>("expires_at")? as u64,
@@ -854,6 +1043,241 @@ fn current_timestamp() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn lease_request(client_request_id: &str, nullifier: u64) -> ApiRequestV2 {
+        use zkapi_types::wire::{Groth16ProofWire, ProofBackendWire};
+        use zkapi_types::RequestPublicInputsV2;
+
+        ApiRequestV2 {
+            client_request_id: client_request_id.to_string(),
+            payload: "{\"mode\":\"openrouter_ephemeral_lease\",\"version\":1}".to_string(),
+            payload_hash: Felt252::from_u64(88),
+            public_inputs: RequestPublicInputsV2 {
+                protocol_version: 2,
+                chain_id: 1,
+                contract_address: Felt252::from_u64(2),
+                active_root: Felt252::from_u64(3),
+                state_signing_key_x: Felt252::from_u64(4),
+                state_signing_key_y: Felt252::from_u64(5),
+                request_time: 6,
+                solvency_bound: 1_000,
+                request_nullifier: Felt252::from_u64(nullifier),
+                authorization_tag: Felt252::from_u64(7),
+                anonymous_commitment_x: Felt252::from_u64(8),
+                anonymous_commitment_y: Felt252::from_u64(9),
+            },
+            proof: Groth16ProofWire {
+                backend: ProofBackendWire::Groth16Bn254,
+                proof: "public-proof".to_string(),
+            },
+        }
+    }
+
+    fn create_oa_lease(store: &NullifierStore, id: &str, nullifier: u64) {
+        store
+            .create_openrouter_lease_with_oa_id(
+                &lease_request(id, nullifier),
+                "oa_org",
+                10,
+                20,
+                21,
+                6.0,
+                Some(&format!("bound-{id}")),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn oa_issuance_fence_preserves_ambiguity_across_retries() {
+        let store = NullifierStore::in_memory().unwrap();
+        create_oa_lease(&store, "ambiguous", 1);
+        assert_eq!(
+            store
+                .lookup_openrouter_lease("ambiguous")
+                .unwrap()
+                .oa_provisioning_outcome,
+            OaProvisioningOutcome::NotStarted
+        );
+        assert!(store.due_openrouter_leases(20).is_empty());
+        assert_eq!(store.due_openrouter_leases(21).len(), 1);
+        assert!(store.confirm_oa_unissued("ambiguous").is_err());
+        assert!(store.begin_oa_issuance("ambiguous").unwrap());
+        assert_eq!(
+            store
+                .lookup_openrouter_lease("ambiguous")
+                .unwrap()
+                .oa_provisioning_outcome,
+            OaProvisioningOutcome::MayHaveIssued
+        );
+        assert_eq!(store.due_openrouter_leases(10_000).len(), 1);
+        store
+            .record_openrouter_lease_error("ambiguous", "response lost")
+            .unwrap();
+        assert!(!store.begin_oa_issuance("ambiguous").unwrap());
+        let lease = store.lookup_openrouter_lease("ambiguous").unwrap();
+        assert_eq!(
+            lease.oa_provisioning_outcome,
+            OaProvisioningOutcome::MayHaveIssued
+        );
+        assert_eq!(lease.last_error.as_deref(), Some("response lost"));
+        assert_eq!(store.due_openrouter_leases(10_000).len(), 1);
+    }
+
+    #[test]
+    fn confirmed_unissued_oa_lease_is_due_immediately_and_cannot_resume() {
+        let store = NullifierStore::in_memory().unwrap();
+        create_oa_lease(&store, "rejected", 1);
+        assert!(store.begin_oa_issuance("rejected").unwrap());
+        let before = current_timestamp();
+        store.confirm_oa_unissued("rejected").unwrap();
+        let lease = store.lookup_openrouter_lease("rejected").unwrap();
+        assert_eq!(
+            lease.oa_provisioning_outcome,
+            OaProvisioningOutcome::ConfirmedUnissued
+        );
+        assert!(lease.settle_after >= before);
+        assert_eq!(store.due_openrouter_leases(0).len(), 1);
+        assert!(store.begin_oa_issuance("rejected").is_err());
+        assert!(store.confirm_oa_unissued("rejected").is_err());
+        store
+            .record_openrouter_lease_error("rejected", "recovery retry")
+            .unwrap();
+        assert_eq!(
+            store
+                .lookup_openrouter_lease("rejected")
+                .unwrap()
+                .oa_provisioning_outcome,
+            OaProvisioningOutcome::ConfirmedUnissued
+        );
+    }
+
+    #[test]
+    fn oa_outcome_changes_require_an_unissued_provisioning_oa_row() {
+        let store = NullifierStore::in_memory().unwrap();
+        store
+            .create_openrouter_lease(&lease_request("direct", 1), "openrouter", 10, 20, 21, 6.0)
+            .unwrap();
+        assert_eq!(
+            store
+                .lookup_openrouter_lease("direct")
+                .unwrap()
+                .oa_provisioning_outcome,
+            OaProvisioningOutcome::MayHaveIssued
+        );
+        for id in ["missing", "direct"] {
+            assert!(store.begin_oa_issuance(id).is_err());
+            assert!(store.confirm_oa_unissued(id).is_err());
+        }
+        for (index, status, key_hash) in [
+            (2, "active", None),
+            (3, "finalized", None),
+            (4, "provisioning", Some("provider-key-hash")),
+        ] {
+            let id = format!("guard-{index}");
+            create_oa_lease(&store, &id, index);
+            assert!(store.begin_oa_issuance(&id).unwrap());
+            store.conn.lock().unwrap().execute(
+                "UPDATE openrouter_leases SET status = ?1, key_hash = ?2 WHERE client_request_id = ?3",
+                params![status, key_hash, id],
+            ).unwrap();
+            assert!(store.begin_oa_issuance(&id).is_err());
+            assert!(store.confirm_oa_unissued(&id).is_err());
+        }
+        assert!(store.due_openrouter_leases(0).is_empty());
+    }
+
+    #[test]
+    fn unknown_oa_outcome_is_ambiguous_until_normalized_for_reconciliation() {
+        let store = NullifierStore::in_memory().unwrap();
+        create_oa_lease(&store, "unknown", 1);
+        store.conn.lock().unwrap().execute(
+            "UPDATE openrouter_leases SET oa_provisioning_outcome = 'future_or_invalid' WHERE client_request_id = 'unknown'",
+            [],
+        ).unwrap();
+        assert_eq!(
+            store
+                .lookup_openrouter_lease("unknown")
+                .unwrap()
+                .oa_provisioning_outcome,
+            OaProvisioningOutcome::MayHaveIssued
+        );
+        assert!(store.due_openrouter_leases(10_000).is_empty());
+        assert!(store.confirm_oa_unissued("unknown").is_err());
+        assert!(!store.begin_oa_issuance("unknown").unwrap());
+        assert_eq!(store.due_openrouter_leases(10_000).len(), 1);
+    }
+
+    #[test]
+    fn legacy_oa_leases_migrate_to_ambiguous_and_outcomes_survive_restart() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("leases.sqlite");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE openrouter_leases (
+                    client_request_id TEXT PRIMARY KEY, request_nullifier TEXT NOT NULL UNIQUE,
+                    api_request_json TEXT NOT NULL, oa_client_request_id TEXT, key_hash TEXT UNIQUE,
+                    key_source TEXT NOT NULL DEFAULT 'openrouter', status TEXT NOT NULL,
+                    issued_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, settle_after INTEGER NOT NULL,
+                    spending_limit_usd REAL NOT NULL, usage_usd REAL, charge_applied INTEGER,
+                    last_error TEXT, updated_at INTEGER NOT NULL
+                );",
+            ).unwrap();
+            let request = lease_request("legacy", 1);
+            conn.execute(
+                "INSERT INTO openrouter_leases (client_request_id, request_nullifier, api_request_json,
+                    oa_client_request_id, key_source, status, issued_at, expires_at, settle_after,
+                    spending_limit_usd, updated_at)
+                 VALUES ('legacy', ?1, ?2, 'legacy-bound-id', 'oa_org', 'provisioning', 10, 20, 21, 6.0, 10)",
+                params![request.public_inputs.request_nullifier.to_hex(), serde_json::to_string(&request).unwrap()],
+            ).unwrap();
+        }
+        {
+            let store = NullifierStore::new(&path).unwrap();
+            assert_eq!(
+                store
+                    .lookup_openrouter_lease("legacy")
+                    .unwrap()
+                    .oa_provisioning_outcome,
+                OaProvisioningOutcome::MayHaveIssued
+            );
+            assert_eq!(store.due_openrouter_leases(10_000).len(), 1);
+            assert!(!store.begin_oa_issuance("legacy").unwrap());
+            create_oa_lease(&store, "never-started", 2);
+            create_oa_lease(&store, "attempted", 3);
+            assert!(store.begin_oa_issuance("attempted").unwrap());
+            create_oa_lease(&store, "rejected", 4);
+            assert!(store.begin_oa_issuance("rejected").unwrap());
+            store.confirm_oa_unissued("rejected").unwrap();
+        }
+        let reopened = NullifierStore::new(&path).unwrap();
+        assert_eq!(
+            reopened
+                .lookup_openrouter_lease("never-started")
+                .unwrap()
+                .oa_provisioning_outcome,
+            OaProvisioningOutcome::NotStarted
+        );
+        assert!(!reopened.begin_oa_issuance("attempted").unwrap());
+        assert_eq!(
+            reopened
+                .lookup_openrouter_lease("rejected")
+                .unwrap()
+                .oa_provisioning_outcome,
+            OaProvisioningOutcome::ConfirmedUnissued
+        );
+        assert!(reopened.begin_oa_issuance("rejected").is_err());
+        let mut due_ids: Vec<_> = reopened
+            .due_openrouter_leases(21)
+            .into_iter()
+            .map(|lease| lease.client_request_id)
+            .collect();
+        due_ids.sort();
+        assert_eq!(
+            due_ids,
+            vec!["attempted", "legacy", "never-started", "rejected"]
+        );
+    }
 
     #[test]
     fn test_reserve_and_lookup() {

@@ -347,7 +347,7 @@ func TestSettlementWaitRefreshesModelPolicyBeforeSpending(t *testing.T) {
 			}, upstream)
 			previous := client.inference.Transport
 			client.inference.Transport = budgetTransport(func(r *http.Request) (*http.Response, error) {
-				if leases.Load() > 0 && r.URL.Host == "org-staging.openanonymity.ai" {
+				if leases.Load() > 0 && r.URL.Host == "org-live.openanonymity.ai" {
 					body := `{"example/model":100}`
 					if r.URL.Path == "/chat/pinned-models" {
 						body = `{"disabled_models":[]}`

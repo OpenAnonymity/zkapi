@@ -1,7 +1,7 @@
 # Arch Linux / AUR
 
 This directory is ready to copy to an AUR repository for `zkapi-clientd-bin`.
-It installs the checksum-pinned `0.1.3` release for x86_64 or aarch64, the native
+It installs the checksum-pinned `0.1.6` release for x86_64 or aarch64, the native
 wallet companion and proving assets, and a systemd user service. Publication to
 the AUR is a separate maintainer step.
 
@@ -43,7 +43,7 @@ The concrete `PKGBUILD` and `.SRCINFO` are generated from the `.in` templates
 and the pinned release checksums. From the repository root, refresh both with:
 
 ```sh
-python3 zkapi-clientd/scripts/sync-packages.py 0.1.3
+python3 zkapi-clientd/scripts/sync-packages.py 0.1.6
 ```
 
 ## Docker validation

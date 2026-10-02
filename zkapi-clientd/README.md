@@ -7,7 +7,7 @@ A local OpenAI-compatible API, paid from your private ETH balance. No OA account
 Install or update:
 
 ```sh
-curl -fsSL https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.3/install.sh | bash
+curl -fsSL https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.6/install.sh | bash
 ```
 
 Configure your wallet:
@@ -67,6 +67,6 @@ To update, stop `serve`, rerun the install command, then start `serve` again. Yo
 
 To withdraw, run `zkapi-clientd config --menu` and choose `withdraw`. It asks for the destination and waits for extra ETH for fees only if needed.
 
-[More options, including Sepolia and Docker clients](docs/CLI_ZKAPI.md) · [Installation details](docs/CLI_PACKAGING.md) · [Privacy](docs/PRIVACY.md)
+[More options, including Tor, Sepolia and Docker clients](docs/CLI_ZKAPI.md) · [Installation details](docs/CLI_PACKAGING.md) · [Privacy](docs/PRIVACY.md)
 
 [NixOS, AUR, and Homebrew packages with background services](docs/CLI_PACKAGING.md#platform-packages-and-background-services) are also available in this repository.

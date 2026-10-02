@@ -47,8 +47,8 @@
   },
   "privacy_mode": {
     "ephemeral_key_source": "oa_org",
-    "issuer_url": "https://org-staging.openanonymity.ai",
-    "verifier_url": "https://verifier2.openanonymity.ai",
+    "issuer_url": "https://org-live.openanonymity.ai",
+    "verifier_url": "https://verifier-production-20260917.openanonymity.ai",
     "openrouter_inference_base": "https://openrouter.ai/api/v1",
     "lease_ttl_seconds": 300
   },

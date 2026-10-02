@@ -1,0 +1,200 @@
+{
+  "web_sources": {
+    "chat/services/modelTiers.js": "f783f94b700c9520a771ae6ff26f5a858fd298bbbe27f55af2e7ab0d785474ba",
+    "chat/zkapi/services/zkapiModelBudget.mjs": "f41077d3b39ba5bfa31ab734f71b869369ea213fea321bc2284f8e35170f3d69"
+  },
+  "assignments": {
+    "test/tier1": 1,
+    "test/tier2": 2,
+    "test/tier3": 3,
+    "test/tier5": 5,
+    "test/tier8": 8,
+    "test/tier25": 25,
+    "test/tier100": 100,
+    "test/unreviewed": 10,
+    "test/reasoner": 25,
+    "test/tier100:free": 1
+  },
+  "cases": [
+    {
+      "model": "test/tier1",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/tier1",
+      "reasoning": true,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/tier2",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/tier2",
+      "reasoning": true,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/tier3",
+      "reasoning": false,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/tier3",
+      "reasoning": true,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/tier5",
+      "reasoning": false,
+      "micro_usd": 3000000
+    },
+    {
+      "model": "test/tier5",
+      "reasoning": true,
+      "micro_usd": 3000000
+    },
+    {
+      "model": "test/tier8",
+      "reasoning": false,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/tier8",
+      "reasoning": true,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/tier25",
+      "reasoning": false,
+      "micro_usd": 4500000
+    },
+    {
+      "model": "test/tier25",
+      "reasoning": true,
+      "micro_usd": 4500000
+    },
+    {
+      "model": "test/tier100",
+      "reasoning": false,
+      "micro_usd": 6000000
+    },
+    {
+      "model": "test/tier100",
+      "reasoning": true,
+      "micro_usd": 6000000
+    },
+    {
+      "model": "test/unreviewed",
+      "reasoning": false,
+      "error": "model_budget_unavailable"
+    },
+    {
+      "model": "test/unreviewed",
+      "reasoning": true,
+      "error": "model_budget_unavailable"
+    },
+    {
+      "model": "test/reasoner",
+      "reasoning": false,
+      "micro_usd": 4500000
+    },
+    {
+      "model": "test/reasoner",
+      "reasoning": true,
+      "micro_usd": 4500000
+    },
+    {
+      "model": "test/tier100:free",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/tier100:free",
+      "reasoning": true,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/tier100:online",
+      "reasoning": false,
+      "micro_usd": 6000000
+    },
+    {
+      "model": "test/tier100:online",
+      "reasoning": true,
+      "micro_usd": 6000000
+    },
+    {
+      "model": "test/tier100:free:online",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/tier100:free:online",
+      "reasoning": true,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/untiered-OPUS",
+      "reasoning": false,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/untiered-OPUS",
+      "reasoning": true,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/untiered-image:online",
+      "reasoning": false,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/untiered-image:online",
+      "reasoning": true,
+      "micro_usd": 2000000
+    },
+    {
+      "model": "test/untiered-thinking",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/untiered-thinking",
+      "reasoning": true,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "openai/o3-untiered",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "openai/o3-untiered",
+      "reasoning": true,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/untiered-mini",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/untiered-mini",
+      "reasoning": true,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/untiered-default",
+      "reasoning": false,
+      "micro_usd": 1000000
+    },
+    {
+      "model": "test/untiered-default",
+      "reasoning": true,
+      "micro_usd": 1000000
+    }
+  ]
+}

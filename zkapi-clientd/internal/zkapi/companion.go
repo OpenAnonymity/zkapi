@@ -91,7 +91,7 @@ func CompanionCommand(ctx context.Context, config Config, companion CompanionCon
 		return nil, errors.New("cannot sync private companion directory")
 	}
 	if companion.VerifierURL == "" {
-		companion.VerifierURL = "https://verifier2.openanonymity.ai"
+		companion.VerifierURL = deployment.Privacy.VerifierURL
 	}
 	verifier, err := url.Parse(companion.VerifierURL)
 	if err != nil || verifier.Scheme != "https" || verifier.Host == "" || verifier.User != nil || verifier.RawQuery != "" || verifier.Fragment != "" {

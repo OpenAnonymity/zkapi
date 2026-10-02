@@ -29,7 +29,7 @@ func parseConfigureOptions(args []string, out io.Writer) (configureOptions, erro
 	f.SetOutput(out)
 	f.StringVar(&o.network, "network", "", "zkAPI network: mainnet or sepolia")
 	f.StringVar(&o.listen, "listen", "", "numeric loopback API address and port")
-	f.StringVar(&o.relay, "relay-url", "", "optional Wisp relay URL; empty selects direct HTTPS")
+	f.StringVar(&o.relay, "relay-url", "", "Wisp relay URL or loopback socks5://IP:PORT (Tor); empty selects direct HTTPS")
 	f.StringVar(&o.binary, "zkapi-binary", "", "path to the installed zkAPI companion")
 	f.StringVar(&o.proofs, "proof-setup-dir", "", "path to the installed proving assets")
 	f.StringVar(&o.usd, "usd", "", "skip the new-deposit USD amount prompt (prompt default: 20; network fees are extra)")
@@ -236,7 +236,7 @@ func configure(ctx context.Context, dir string, args []string, ui setupPrompter,
 
 func applyConfigureOptions(c config.Config, o configureOptions) config.Config {
 	if o.fields["network"] {
-		c.ZKAPI.Network = o.network
+		c = config.SelectNetwork(c, o.network)
 	}
 	if o.fields["key-reuse-window-seconds"] {
 		c.KeyReuseWindowSeconds = o.keyReuseWindowSeconds
@@ -264,7 +264,9 @@ func applyConfigureOptions(c config.Config, o configureOptions) config.Config {
 
 func showConfigureSummary(c config.Config, ui setupPrompter) {
 	transport := "direct HTTPS"
-	if c.RelayURL != "" {
+	if strings.HasPrefix(c.RelayURL, "socks5://") {
+		transport = "SOCKS5 proxy enabled"
+	} else if c.RelayURL != "" {
 		transport = "Wisp relay enabled"
 	}
 	ui.Printf("Configuration: saved.\nzkAPI network: %s\nTransport: %s\n", c.ZKAPI.Network, transport)
@@ -300,11 +302,11 @@ func saveConfiguredSettings(ctx context.Context, dir string, previous, next conf
 }
 
 func promptConfigure(ctx context.Context, c config.Config, ui setupPrompter, edit bool) (config.Config, error) {
-	var err error
-	c.ZKAPI.Network, err = configureChoice(ctx, ui, "Choose network: mainnet (real ETH) or sepolia (test ETH)", c.ZKAPI.Network, "mainnet", "sepolia")
+	network, err := configureChoice(ctx, ui, "Choose network: mainnet (real ETH) or sepolia (test ETH)", c.ZKAPI.Network, "mainnet", "sepolia")
 	if err != nil {
 		return c, err
 	}
+	c = config.SelectNetwork(c, network)
 	if !edit {
 		return c, nil
 	}
@@ -331,7 +333,7 @@ func promptConfigure(ctx context.Context, c config.Config, ui setupPrompter, edi
 			// out of the prompt just as it is kept out of the status summary.
 			fallback = "keep"
 		}
-		value, err := ui.Ask(ctx, "Transport: direct, keep existing relay, or a Wisp relay URL", fallback)
+		value, err := ui.Ask(ctx, "Transport: direct, keep existing route, Wisp URL, or loopback socks5://IP:PORT", fallback)
 		if err != nil {
 			return c, err
 		}
@@ -347,7 +349,7 @@ func promptConfigure(ctx context.Context, c config.Config, ui setupPrompter, edi
 			candidate.RelayURL = c.RelayURL
 		}
 		if err := config.Validate(candidate); err != nil {
-			ui.Printf("Invalid transport setting; enter direct or a valid Wisp relay URL.\n")
+			ui.Printf("Invalid transport setting; enter direct, a valid Wisp URL, or a loopback SOCKS5 URL.\n")
 			continue
 		}
 		c = candidate

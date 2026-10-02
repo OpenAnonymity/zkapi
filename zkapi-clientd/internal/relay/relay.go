@@ -1,6 +1,6 @@
 // Package relay provides direct HTTPS or destination TLS through a Wisp v1
-// relay. A configured relay resolves destination names and forwards encrypted
-// bytes without terminating TLS. Relay mode never falls back to direct access.
+// relay or a loopback SOCKS5 proxy. A configured route forwards encrypted bytes
+// without terminating TLS and never falls back to direct access.
 package relay
 
 import (
@@ -23,8 +23,8 @@ import (
 const DefaultURL = "wss://oa-1.refraction.network/?secret=1f45ceecf768790c8389ff704612d5cf"
 
 // NewClient creates an HTTPS-only, cookie-free client. An empty relayURL uses
-// direct connections without environment proxies. When a relay is configured,
-// one WebSocket per TCP connection avoids multiplexing inference credentials.
+// direct connections without environment proxies. In Wisp mode, one WebSocket
+// per TCP connection avoids multiplexing inference credentials.
 func NewClient(relayURL string) (*http.Client, error) {
 	dialContext, err := destinationDialer(relayURL)
 	if err != nil {
@@ -54,7 +54,20 @@ func destinationDialer(relayURL string) (func(context.Context, string, string) (
 		return (&net.Dialer{Timeout: 20 * time.Second}).DialContext, nil
 	}
 	u, err := url.Parse(relayURL)
-	if err != nil || u.User != nil || u.Fragment != "" || u.Hostname() == "" || (u.Scheme != "wss" && !(u.Scheme == "ws" && loopback(u.Hostname()))) {
+	if err != nil || u.User != nil || u.Fragment != "" || u.Hostname() == "" {
+		return nil, errors.New("transport must use wss or a loopback SOCKS5 proxy")
+	}
+	if u.Scheme == "socks5" {
+		ip := net.ParseIP(u.Hostname())
+		port, portErr := strconv.ParseUint(u.Port(), 10, 16)
+		if ip == nil || !ip.IsLoopback() || portErr != nil || port == 0 || u.Path != "" || u.RawQuery != "" || u.Opaque != "" {
+			return nil, errors.New("SOCKS5 proxy must be a numeric loopback address and port without credentials or path")
+		}
+		return func(ctx context.Context, network, address string) (net.Conn, error) {
+			return dialSOCKS5(ctx, u.Host, network, address)
+		}, nil
+	}
+	if u.Scheme != "wss" && !(u.Scheme == "ws" && loopback(u.Hostname())) {
 		return nil, errors.New("relay must use wss (ws is allowed only on loopback)")
 	}
 	return func(ctx context.Context, network, address string) (net.Conn, error) {

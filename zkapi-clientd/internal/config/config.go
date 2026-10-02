@@ -22,6 +22,37 @@ import (
 const DefaultKeyReuseWindowSeconds = 60
 const MaxKeyReuseWindowSeconds = 300
 
+const mainnetVerifierURL = "https://verifier-production-20260917.openanonymity.ai"
+const sepoliaVerifierURL = "https://verifier2.openanonymity.ai"
+
+// DefaultVerifierURL is the reviewed verifier for this network. Unknown networks
+// have no default and are rejected by Validate.
+func DefaultVerifierURL(network string) string {
+	switch network {
+	case "mainnet":
+		return mainnetVerifierURL
+	case "sepolia":
+		return sepoliaVerifierURL
+	default:
+		return ""
+	}
+}
+
+// SelectNetwork follows the network's verifier only when the profile uses its
+// default. A separately configured verifier stays explicit across network edits.
+func SelectNetwork(c Config, network string) Config {
+	if isVerifierOrigin(c.VerifierURL, DefaultVerifierURL(c.ZKAPI.Network)) ||
+		(c.ZKAPI.Network == "mainnet" && isVerifierOrigin(c.VerifierURL, sepoliaVerifierURL)) {
+		c.VerifierURL = DefaultVerifierURL(network)
+	}
+	c.ZKAPI.Network = network
+	return c
+}
+
+func isVerifierOrigin(value, origin string) bool {
+	return origin != "" && (value == origin || value == origin+"/")
+}
+
 type ZKAPI struct {
 	ClientURL         string `json:"client_url"`
 	BridgeToken       string `json:"bridge_token"`
@@ -46,7 +77,7 @@ type Config struct {
 	Backend               string `json:"backend"`               // fixed to zkapi; retained for existing profile compatibility
 	OrgURL                string `json:"org_url,omitempty"`     // legacy profile field; unused
 	VerifierURL           string `json:"verifier_url"`
-	RelayURL              string `json:"relay_url"` // empty uses direct HTTPS; nonempty opts into Wisp
+	RelayURL              string `json:"relay_url"` // empty uses direct HTTPS; nonempty selects Wisp or loopback SOCKS5
 	Concurrency           int    `json:"concurrency"`
 	ZKAPI                 ZKAPI  `json:"zkapi"`
 }
@@ -113,7 +144,7 @@ func Default() (Config, error) {
 		return Config{}, err
 	}
 	bridge, err := Secret()
-	return Config{KeyReuseWindowSeconds: DefaultKeyReuseWindowSeconds, Listen: "127.0.0.1:8787", APIKey: key, Backend: "zkapi", VerifierURL: "https://verifier2.openanonymity.ai", Concurrency: 4, ZKAPI: ZKAPI{ClientURL: "http://127.0.0.1:8790", BridgeToken: bridge, Network: "mainnet"}}, err
+	return Config{KeyReuseWindowSeconds: DefaultKeyReuseWindowSeconds, Listen: "127.0.0.1:8787", APIKey: key, Backend: "zkapi", VerifierURL: DefaultVerifierURL("mainnet"), Concurrency: 4, ZKAPI: ZKAPI{ClientURL: "http://127.0.0.1:8790", BridgeToken: bridge, Network: "mainnet"}}, err
 }
 
 func Validate(c Config) error {
@@ -262,6 +293,12 @@ func readConfig(dir string) (Config, error) {
 	var trailing any
 	if d.Decode(&trailing) != io.EOF {
 		return Config{}, errors.New("config.json must contain one JSON object")
+	}
+	// Older releases saved the former shared default in Mainnet profiles. Adopt
+	// the reviewed Mainnet rotation in memory; loading does not rewrite private
+	// configuration or touch wallet/recovery files. Preserve other verifier URLs.
+	if c.ZKAPI.Network == "mainnet" && isVerifierOrigin(c.VerifierURL, sepoliaVerifierURL) {
+		c.VerifierURL = mainnetVerifierURL
 	}
 	if err := Validate(c); err != nil {
 		return Config{}, err

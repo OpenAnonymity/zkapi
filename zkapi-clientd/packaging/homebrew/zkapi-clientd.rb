@@ -2,18 +2,18 @@
 class ZkapiClientd < Formula
   desc "Local inference API with private prepaid zkAPI access"
   homepage "https://github.com/ethereum/zkapi"
-  version "0.1.3"
+  version "0.1.6"
   license "MIT"
 
   on_macos do
     depends_on macos: :ventura
     on_arm do
-      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.3/zkapi-clientd_0.1.3_darwin_arm64.tar.gz"
-      sha256 "7f7d1188f35f211b210563094c6354a1a3109f6318790ed89d32c45546bd5822"
+      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.6/zkapi-clientd_0.1.6_darwin_arm64.tar.gz"
+      sha256 "0e045245332fbe5d832d73f4ec1633bada2a5058032dd137b9e447f83bdc86c4"
     end
     on_intel do
-      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.3/zkapi-clientd_0.1.3_darwin_amd64.tar.gz"
-      sha256 "cde13c1021859cf0486ddce25ee9276791c953ff301794c5f629fba97228e95d"
+      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.6/zkapi-clientd_0.1.6_darwin_amd64.tar.gz"
+      sha256 "ac9bb3f0f64c3f9c5c271291f38065cb1b008b5d8b2eb5e998ea9b615fc54a12"
     end
   end
 
@@ -21,12 +21,12 @@ class ZkapiClientd < Formula
     depends_on "openssl@3"
     depends_on "patchelf" => :build
     on_arm do
-      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.3/zkapi-clientd_0.1.3_linux_arm64.tar.gz"
-      sha256 "1eb8b36618341aa406f6b83b2843c30dbadd5ad08dc86111f94961594b5bc26b"
+      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.6/zkapi-clientd_0.1.6_linux_arm64.tar.gz"
+      sha256 "41549a752cdffdace74cdabd872ad71190d7509a9b307e54f5ee0e5f863b7cdf"
     end
     on_intel do
-      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.3/zkapi-clientd_0.1.3_linux_amd64.tar.gz"
-      sha256 "fa9184770e7864cd71ac8081545a4e55036924dbae456632244682b8541addf5"
+      url "https://github.com/ethereum/zkapi/releases/download/clientd-v0.1.6/zkapi-clientd_0.1.6_linux_amd64.tar.gz"
+      sha256 "41f9df6c24fd1e1491bc21fcc5be89289525c01f5a850bd64326a85152bbff95"
     end
   end
 

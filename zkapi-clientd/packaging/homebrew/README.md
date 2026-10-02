@@ -1,9 +1,9 @@
 # Homebrew package and service
 
-`zkapi-clientd.rb` installs the published `clientd-v0.1.3` binaries for macOS
+`zkapi-clientd.rb` installs the published `clientd-v0.1.6` binaries for macOS
 (Intel/Apple Silicon) and Linux (x86_64/ARM64), including `zkapi-walletd` and its
 proof setup. The release archive checksums come from
-`packaging/releases/clientd-0.1.3.json`. `zkapi-clientd.rb.in` is the release template.
+`packaging/releases/clientd-0.1.6.json`. `zkapi-clientd.rb.in` is the release template.
 
 The formula can be placed in a tap's `Formula/` directory. To install from this
 checkout without publishing a tap, run from the repository root:

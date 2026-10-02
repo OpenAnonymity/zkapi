@@ -297,6 +297,7 @@ func prepareStartConfig(ctx context.Context, dir string, options startOptions, u
 			ui.Printf("Enter mainnet or sepolia.\n")
 		}
 	}
+	c.VerifierURL = config.DefaultVerifierURL(c.ZKAPI.Network)
 	if options.listen != "" {
 		c.Listen = options.listen
 	}

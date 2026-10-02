@@ -78,6 +78,24 @@ with input hidden. Fund with Sepolia ETH, never mainnet ETH. Mainnet and
 Sepolia have separate signing keys and wallet state. Switching networks keeps
 the other network's recovery data.
 
+## Tor
+
+Start Tor with a local SOCKS listener, then select its numeric loopback address:
+
+```sh
+zkapi-clientd config --relay-url socks5://127.0.0.1:9050
+zkapi-clientd serve
+```
+
+The client passes destination names to SOCKS5 for remote DNS and keeps HTTPS
+certificate verification. The Go frontend and the wallet companion use the
+same route. If Tor is unavailable, requests fail instead of connecting directly.
+Keep the local OpenAI-compatible API at its loopback URL. Stop a running
+`serve` before changing its saved transport. `HTTP_PROXY`, `HTTPS_PROXY`, and
+`ALL_PROXY` do not change this client's route.
+On macOS, `torify zkapi-clientd serve` alone does not route the Go client; set
+the SOCKS5 relay URL above even when launching it through `torify`.
+
 ## Deployment origins
 
 The client defaults use these deployment manifests and vaults:
@@ -152,6 +170,20 @@ The helper recovers pending or ambiguous settlement outcomes without repeated
 retirement requests. Signed settlement can still take several minutes.
 Inference is never retried automatically after a provider/transport error.
 
+The allowance follows the OA web client's public model-tier policy: $1, $2,
+$3, $4.50 or $6 depending on the model. This is an aggregate spending ceiling,
+not a fixed charge. Both clients strip only `:online` for tier lookup, keep
+other variants distinct, and reject an explicit tier without a reviewed budget.
+The production org's $20 per-key ceiling does not raise these client allowances.
+
+If issuance was interrupted before a key reached the client, settlement first
+asks the server to reconcile the saved authorization. For an older pending
+server, it replays that exact request, verifies any returned key and retires it
+without using it for inference. A finalized cancellation needs no key: the
+helper verifies and installs the signed wallet response. Unknown outcomes stay
+pending with the original recovery journal intact. Retrying uses the existing
+wallet; deleting or resetting its files cannot safely release a server reservation.
+
 The default `key_reuse_window_seconds` is 60 seconds. An explicitly saved
 window is preserved across updates. Stop `serve`, run
 `zkapi-clientd config --key-reuse-window-seconds 0`, then restart `serve` to
@@ -179,6 +211,27 @@ actual cost and remaining private balance in ETH appear only after signed
 settlement, which can arrive after the response ends. Routine helper
 readiness/retry messages are hidden. The foreground daemon stops if its helper
 exits; only an external service manager can restart it.
+
+### Mainnet production issuer and verifier
+
+Version `0.1.4` switches Mainnet to issuer
+`https://org-live.openanonymity.ai` and verifier
+`https://verifier-production-20260917.openanonymity.ai`. Sepolia continues using
+the staging org and `verifier2`. The Mainnet vault, signing keys, proof hashes,
+protocol endpoints and wallet directory are unchanged.
+
+Stop the running daemon, install the update and restart with the same profile.
+Existing Mainnet profiles using the historical default `verifier2` origin use
+the production verifier when loaded; custom verifier origins are preserved.
+Loading alone does not rewrite the configuration file. New profiles and network
+selection use the matching network default. The saved Mainnet manifest migrates
+only when both complete old and new manifests match their reviewed SHA-256 pins;
+any other manifest change is rejected. Wallet notes and recovery journals are
+preserved, and Sepolia's existing migration behavior is unchanged.
+
+This update does not add station trust exceptions, fund a wallet or clear an
+unfinished lease. Existing lease recovery still uses the saved request and
+server-signed settlement response.
 
 ### Trusted-station verification fallback
 

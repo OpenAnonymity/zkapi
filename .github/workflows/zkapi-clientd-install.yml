@@ -31,7 +31,7 @@ jobs:
         run: python3 zkapi-clientd/scripts/test-install.py
       - name: Test package generation and source preparation
         run: |
-          python3 zkapi-clientd/scripts/sync-packages.py 0.1.3 --check
+          python3 zkapi-clientd/scripts/sync-packages.py 0.1.6 --check
           python3 zkapi-clientd/scripts/test-packages.py
           python3 zkapi-clientd/scripts/test-prepare-zkapi.py
           python3 zkapi-clientd/scripts/test-source-install.py

@@ -1,7 +1,9 @@
 # Browser deployment profile fixtures
 
-These public profiles match the reviewed deployment configurations packaged in
-`sdk/assets/config/{mainnet,sepolia}.json`. Their public endpoints are
+These public profiles match the reviewed OA Chat deployment configurations.
+Mainnet includes the October 1 production verifier update from OA Chat commit
+`0be21ed`; Sepolia retains its existing configuration. The SDK's separately
+packaged browser profiles may lag this CLI update. Their public endpoints are
 `zkapi-mainnet.openanonymity.ai` and `zkapi-sepolia.openanonymity.ai`.
 
 The fixtures independently check the client's embedded deployment identity,

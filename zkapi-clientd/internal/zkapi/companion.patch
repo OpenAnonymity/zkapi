@@ -2094,7 +2094,7 @@ index bebd5c4..5c69960 100644
                      .body(Body::empty())
                      .unwrap(),
 diff --git a/crates/zkapi-clientd/src/service.rs b/crates/zkapi-clientd/src/service.rs
-index 6b0305d..2334584 100644
+index 6b0305d..5a46cd4 100644
 --- a/crates/zkapi-clientd/src/service.rs
 +++ b/crates/zkapi-clientd/src/service.rs
 @@ -12,6 +12,7 @@
@@ -2332,9 +2332,9 @@ index 6b0305d..2334584 100644
              prepared_withdrawal: tokio::sync::Mutex::new(prepared_withdrawal),
 +            oa_banned_stations: Mutex::new(Default::default()),
 +            oa_session_events: Arc::new(crate::oa_events::SessionEvents::new()),
-         }))
-     }
-
++        }))
++    }
++
 +    // The Go gateway receives only an admitted provider lease with explicit verification status. Prompt content
 +    // never enters the wallet/prover bridge or the zkAPI payment server.
 +    pub fn oa_bridge_status(&self) -> serde_json::Value {
@@ -2489,9 +2489,9 @@ index 6b0305d..2334584 100644
 +            "verified": lease.verified,
 +            "verification_status": if lease.verified { "verified" } else { "verifier-unavailable" },
 +            "verification_detail": lease.verification_detail,
-+        }))
-+    }
-+
+         }))
+     }
+
 +
 +    async fn ready_direct_lease(&self, request_limit_micro_usd: u128) -> Result<tokio::sync::MutexGuard<'_, Option<ActiveOpenRouterLease>>, AuthError> {
 +        use sha3::{Digest, Keccak256};
@@ -2630,7 +2630,19 @@ index 6b0305d..2334584 100644
                  let Some(lease) = self.find_direct_lease_for_withdrawal(&request).await? else {
                      tracing::warn!(
                          client_request_id = %request.client_request_id,
-@@ -1091,6 +1445,7 @@ impl AuthService {
+@@ -951,7 +1305,10 @@ impl AuthService {
+                     return Ok(status);
+                 };
+                 match lease.status.as_str() {
+-                    "active" => {
++                    "provisioning" => {
++                        self.finish_interrupted_direct_lease(&request).await?;
++                    }
++                    "active" | "retiring" | "disabled" | "revoking" => {
+                         self.retire_direct_openrouter_lease(&request.client_request_id)
+                             .await?;
+                     }
+@@ -1091,6 +1448,7 @@ impl AuthService {
          &self,
          lease_slot: &mut Option<ActiveOpenRouterLease>,
          session_id: &str,
@@ -2638,7 +2650,7 @@ index 6b0305d..2334584 100644
      ) -> Result<(), AuthError> {
          if lease_slot
              .as_ref()
-@@ -1123,7 +1478,7 @@ impl AuthService {
+@@ -1123,7 +1481,7 @@ impl AuthService {
          // explicit settlement, credit exhaustion, or a key rejection.
          let _ = self.recover().await?;
          *lease_slot = Some(
@@ -2647,7 +2659,7 @@ index 6b0305d..2334584 100644
                  .await?,
          );
          Ok(())
-@@ -1197,7 +1552,7 @@ impl AuthService {
+@@ -1197,7 +1555,7 @@ impl AuthService {
          loop {
              let request_guard = self.direct_request_mutex.clone().read_owned().await;
              let mut lease_slot = self.direct_lease.lock().await;
@@ -2656,7 +2668,7 @@ index 6b0305d..2334584 100644
                  .await?;
              let lease = lease_slot
                  .as_mut()
-@@ -1208,15 +1563,17 @@ impl AuthService {
+@@ -1208,15 +1566,17 @@ impl AuthService {
                          "OA lease lost its verification evidence".to_string(),
                      )
                  })?;
@@ -2676,7 +2688,7 @@ index 6b0305d..2334584 100644
              let client_request_id = lease.client_request_id.clone();
              let mut reserved_lease = lease.clone();
              lease.requests_served = lease.requests_served.saturating_add(1);
-@@ -1290,24 +1647,39 @@ impl AuthService {
+@@ -1290,24 +1650,39 @@ impl AuthService {
          }
      }
 
@@ -2718,7 +2730,7 @@ index 6b0305d..2334584 100644
          }
          let url = format!(
              "{}{}",
-@@ -1326,8 +1698,7 @@ impl AuthService {
+@@ -1326,8 +1701,7 @@ impl AuthService {
          expires_at: u64,
      ) -> Result<reqwest::Response, AuthError> {
          for attempt in 1..=DIRECT_REMOTE_MAX_ATTEMPTS {
@@ -2728,7 +2740,7 @@ index 6b0305d..2334584 100644
                  .post(url)
                  .bearer_auth(api_key)
                  .header("content-type", "application/json")
-@@ -1387,21 +1758,25 @@ impl AuthService {
+@@ -1387,94 +1761,56 @@ impl AuthService {
      async fn issue_direct_openrouter_lease(
          &self,
          session_id: String,
@@ -2759,27 +2771,70 @@ index 6b0305d..2334584 100644
              let status = response.status();
              let body = response
                  .text()
-@@ -1412,6 +1787,13 @@ impl AuthService {
-                     .map_err(|error| AuthError::Serialization(error.to_string()))?;
-                 let extensions: OpenRouterLeaseExtensions = serde_json::from_str(&body)
-                     .map_err(|error| AuthError::Serialization(error.to_string()))?;
-+                let expected_quote = crate::oa_native::saved_quote(&self.config, &request.payload)?;
-+                let expected_micros = match &expected_quote { Some(quote) => quote.usd_micros(request.public_inputs.solvency_bound)?, None => request.public_inputs.solvency_bound };
-+                if lease.status != "active" || lease.client_request_id != request.client_request_id
-+                    || extensions.billing_quote != expected_quote || !lease.spending_limit_usd.is_finite()
-+                    || lease.spending_limit_usd != expected_micros as f64 / 1_000_000.0 {
-+                    return Err(AuthError::KeyVerification("lease identity, native quote, or spending cap mismatch".into()));
-+                }
-                 if lease.api_key.is_empty() || lease.expires_at <= now_seconds() {
-                     return Err(AuthError::Wallet(
-                         "server returned an unusable OpenRouter lease".to_string(),
-@@ -1466,10 +1848,17 @@ impl AuthService {
-                     settle_after: lease.settle_after,
-                     verification,
-                     verified,
-+                    verification_detail: None,
-                     requests_served: 0,
-                 });
+                 .await
+                 .map_err(|error| AuthError::Wallet(error.to_string()))?;
+             if status.is_success() {
+-                let lease: OpenRouterLeaseResponse = serde_json::from_str(&body)
+-                    .map_err(|error| AuthError::Serialization(error.to_string()))?;
+-                let extensions: OpenRouterLeaseExtensions = serde_json::from_str(&body)
+-                    .map_err(|error| AuthError::Serialization(error.to_string()))?;
+-                if lease.api_key.is_empty() || lease.expires_at <= now_seconds() {
+-                    return Err(AuthError::Wallet(
+-                        "server returned an unusable OpenRouter lease".to_string(),
+-                    ));
+-                }
+-                let expected_inference = &self.config.openrouter_inference_base;
+-                if !matches_trusted_url(&lease.openrouter_api_base, expected_inference) {
+-                    return Err(AuthError::KeyVerification(
+-                        "lease inference origin does not match the client's trusted OpenRouter origin"
+-                            .to_string(),
+-                    ));
+-                }
+-                let (verification, verified) = match extensions.key_source.as_str() {
+-                    "openrouter" => {
+-                        enforce_required_key_source(
+-                            self.config.require_oa_org_key_source,
+-                            "openrouter",
+-                        )?;
+-                        if extensions.verification.is_some() {
+-                            return Err(AuthError::KeyVerification(
+-                                "direct OpenRouter lease included unexpected OA evidence"
+-                                    .to_string(),
+-                            ));
+-                        }
+-                        (None, true)
+-                    }
+-                    "oa_org" => {
+-                        let evidence = extensions.verification.ok_or_else(|| {
+-                            AuthError::KeyVerification(
+-                                "OA org lease omitted verification evidence".to_string(),
+-                            )
+-                        })?;
+-                        (Some(evidence), false)
+-                    }
+-                    source => {
+-                        return Err(AuthError::KeyVerification(format!(
+-                            "server returned unsupported key source {source}"
+-                        )))
+-                    }
+-                };
+-                tracing::info!(
+-                    client_request_id = %lease.client_request_id,
+-                    expires_at = lease.expires_at,
+-                    "opened prompt-private OpenRouter lease"
+-                );
+-                return Ok(ActiveOpenRouterLease {
+-                    session_id,
+-                    client_request_id: lease.client_request_id,
+-                    api_key: lease.api_key,
+-                    openrouter_api_base: lease.openrouter_api_base,
+-                    expires_at: lease.expires_at,
+-                    settle_after: lease.settle_after,
+-                    verification,
+-                    verified,
+-                    requests_served: 0,
+-                });
++                return self.parse_direct_openrouter_lease(&request, session_id, &body);
              }
              if let Ok(error) = serde_json::from_str::<ErrorResponse>(&body) {
 +                if !refreshed_native_quote && self.config.billing_asset == "native_eth"
@@ -2791,7 +2846,143 @@ index 6b0305d..2334584 100644
                  if error.error_code == "stale_root" && !retried_stale_root {
                      self.clear_pending_request().await?;
                      retried_stale_root = true;
-@@ -1535,117 +1924,86 @@ impl AuthService {
+                     continue;
+                 }
++                if matches!(error.error_code.as_str(), "oa_key_policy_rejected" | "replay") {
++                    // The server can safely finalize an unissued authorization.
++                    // Only signed recovery may advance the wallet; an error
++                    // response alone never authorizes removal of the journal.
++                    let recovered = self.recover().await?;
++                    if error.error_code == "replay" && !reconciled_lost_key
++                        && (recovered.recovered || !recovered.wallet.pending_request) {
++                        reconciled_lost_key = true;
++                        continue;
++                    }
++                }
+                 if error.error_code == "lease_pending" {
+                     let lease_status = self
+                         .fetch_direct_lease_status(&request.client_request_id)
+@@ -1530,122 +1866,206 @@ impl AuthService {
+         }
+     }
+
++    /// Replay only the saved provisioning authorization, then retire it. Never
++    /// cache or return its credential to inference, refresh its quote, or create
++    /// another proof from this settlement path. A lost reply is reconciled via
++    /// the wallet's verified signed recovery, never by clearing its journal.
++    async fn finish_interrupted_direct_lease(&self, request: &ApiRequestV2) -> Result<(), AuthError> {
++        // A current server can retire this exact authorization without issuing
++        // a new key. Older servers return lease_pending for provisioning; only
++        // that explicit response permits the browser-compatible replay below.
++        if self.try_retire_direct_request(request, false).await? {
++            return Ok(());
++        }
++        let response = zkapi_client::testnet_auth::request(
++            self.config.chain_id, &self.config.protocol_server_url, reqwest::Method::POST,
++            format!("{}/v2/openrouter/leases", self.config.protocol_server_url.trim_end_matches('/')),
++        )?
++            .timeout(Duration::from_secs(15))
++            .json(request)
++            .send()
++            .await;
++        if let Ok(response) = response {
++            let response = zkapi_client::testnet_auth::check_response(response)?;
++            if response.status().is_success() {
++                let body = response.text().await.map_err(|error| AuthError::Wallet(error.to_string()))?;
++                let lease = self.parse_direct_openrouter_lease(request, "oa-recovery-only".into(), &body)?;
++                if let Some(evidence) = lease.verification.as_ref() {
++                    self.verify_oa_key(&lease.api_key, lease.expires_at, evidence).await?;
++                }
++                self.check_cached_lease_station(&lease)?;
++                // Deliberately drop the key before requesting settlement.
++                drop(lease);
++                return self.retire_direct_request(request).await;
++            }
++        }
++        // A definitive no-issuance rejection may already have produced a signed
++        // zero-charge cancellation. A concurrent worker may also have finalized
++        // the original lease. The status/error alone never authorizes a reset.
++        let recovered = self.recover().await?;
++        if recovered.recovered || !recovered.wallet.pending_request {
++            return Ok(());
++        }
++        let lease = self.fetch_direct_lease_status(&request.client_request_id).await?;
++        if matches!(lease.status.as_str(), "active" | "retiring" | "disabled" | "revoking") {
++            return self.retire_direct_request(request).await;
++        }
++        Err(AuthError::LeasePending("interrupted key issuance is not yet recoverable; the saved request is preserved".into()))
++    }
++
++    fn parse_direct_openrouter_lease(
++        &self, request: &ApiRequestV2, session_id: String, body: &str,
++    ) -> Result<ActiveOpenRouterLease, AuthError> {
++        let lease: OpenRouterLeaseResponse = serde_json::from_str(&body)
++            .map_err(|error| AuthError::Serialization(error.to_string()))?;
++        let extensions: OpenRouterLeaseExtensions = serde_json::from_str(&body)
++            .map_err(|error| AuthError::Serialization(error.to_string()))?;
++        let expected_quote = crate::oa_native::saved_quote(&self.config, &request.payload)?;
++        let expected_micros = match &expected_quote { Some(quote) => quote.usd_micros(request.public_inputs.solvency_bound)?, None => request.public_inputs.solvency_bound };
++        if lease.status != "active" || lease.client_request_id != request.client_request_id
++            || extensions.billing_quote != expected_quote || !lease.spending_limit_usd.is_finite()
++            || lease.spending_limit_usd != expected_micros as f64 / 1_000_000.0 {
++            return Err(AuthError::KeyVerification("lease identity, native quote, or spending cap mismatch".into()));
++        }
++        if lease.api_key.is_empty() || lease.expires_at <= now_seconds() {
++            return Err(AuthError::Wallet(
++                "server returned an unusable OpenRouter lease".to_string(),
++            ));
++        }
++        let expected_inference = &self.config.openrouter_inference_base;
++        if !matches_trusted_url(&lease.openrouter_api_base, expected_inference) {
++            return Err(AuthError::KeyVerification(
++                "lease inference origin does not match the client's trusted OpenRouter origin"
++                    .to_string(),
++            ));
++        }
++        let (verification, verified) = match extensions.key_source.as_str() {
++            "openrouter" => {
++                enforce_required_key_source(
++                    self.config.require_oa_org_key_source,
++                    "openrouter",
++                )?;
++                if extensions.verification.is_some() {
++                    return Err(AuthError::KeyVerification(
++                        "direct OpenRouter lease included unexpected OA evidence"
++                            .to_string(),
++                    ));
++                }
++                (None, true)
++            }
++            "oa_org" => {
++                let evidence = extensions.verification.ok_or_else(|| {
++                    AuthError::KeyVerification(
++                        "OA org lease omitted verification evidence".to_string(),
++                    )
++                })?;
++                (Some(evidence), false)
++            }
++            source => {
++                return Err(AuthError::KeyVerification(format!(
++                    "server returned unsupported key source {source}"
++                )))
++            }
++        };
++        Ok(ActiveOpenRouterLease {
++            session_id,
++            client_request_id: lease.client_request_id,
++            api_key: lease.api_key,
++            openrouter_api_base: lease.openrouter_api_base,
++            expires_at: lease.expires_at,
++            settle_after: lease.settle_after,
++            verification,
++            verified,
++            verification_detail: None,
++            requests_served: 0,
++        })
++    }
++
+     async fn verify_oa_key(
+         &self,
          api_key: &str,
          expires_at: u64,
          evidence: &OaKeyVerificationEvidence,
@@ -2963,8 +3154,9 @@ index 6b0305d..2334584 100644
 +            return Err(AuthError::KeyVerification("verifier response binding mismatch".into()));
 +        }
 +        oa_verifier_outage(Some(status), &result, expires_at, evidence, api_key, expected_verifier, trust)
-+    }
-+
+     }
+
+-    async fn prepare_direct_lease_request(&self) -> Result<ApiRequestV2, AuthError> {
 +    fn check_request_budget(&self, request: &ApiRequestV2, limit: u128) -> Result<(), AuthError> {
 +        if let Some(quote) = crate::oa_native::saved_quote(&self.config, &request.payload)? {
 +            let expected = quote.budget_units(limit)?.max(self.config.request_charge_cap);
@@ -2973,14 +3165,13 @@ index 6b0305d..2334584 100644
 +            }
 +        }
 +        Ok(())
-     }
-
--    async fn prepare_direct_lease_request(&self) -> Result<ApiRequestV2, AuthError> {
++    }
++
 +    async fn prepare_direct_lease_request(&self, request_limit_micro_usd: Option<u128>) -> Result<ApiRequestV2, AuthError> {
          let config = self.config.clone();
          let wallet_mutex = self.wallet_mutex.clone();
          let indexer = self.indexer.clone();
-@@ -1655,6 +2013,7 @@ impl AuthService {
+@@ -1655,6 +2075,7 @@ impl AuthService {
                  .map_err(|error| AuthError::Wallet(error.to_string()))?;
              let _lockfile = acquire_wallet_lock(&config.state_dir)?;
              let mut wallet = load_wallet(&config, Vec::new())?;
@@ -2988,7 +3179,7 @@ index 6b0305d..2334584 100644
              let authorization = serde_json::to_string(&OpenRouterLeaseAuthorization::default())
                  .map_err(|error| AuthError::Serialization(error.to_string()))?;
              if wallet.has_pending_request() {
-@@ -1663,7 +2022,7 @@ impl AuthService {
+@@ -1663,7 +2084,7 @@ impl AuthService {
                          "an older pending request has no retryable request body".to_string(),
                      )
                  })?;
@@ -2997,7 +3188,7 @@ index 6b0305d..2334584 100644
                      return Err(AuthError::LeasePending(
                          "a non-lease zkAPI request is still pending".to_string(),
                      ));
-@@ -1676,6 +2035,13 @@ impl AuthService {
+@@ -1676,6 +2097,13 @@ impl AuthService {
              let (active_root, siblings) = runtime.block_on(async move {
                  Ok::<_, AuthError>((indexer.root().await?, indexer.note_path(note_id).await?))
              })?;
@@ -3011,7 +3202,7 @@ index 6b0305d..2334584 100644
              let payload_hash = compute_payload_hash(authorization.as_bytes());
              wallet
                  .prepare_request(&authorization, payload_hash, active_root, siblings)
-@@ -1684,6 +2050,42 @@ impl AuthService {
+@@ -1684,6 +2112,42 @@ impl AuthService {
          .await
      }
 
@@ -3054,7 +3245,7 @@ index 6b0305d..2334584 100644
      async fn clear_pending_request(&self) -> Result<(), AuthError> {
          let config = self.config.clone();
          let wallet_mutex = self.wallet_mutex.clone();
-@@ -1693,6 +2095,7 @@ impl AuthService {
+@@ -1693,6 +2157,7 @@ impl AuthService {
                  .map_err(|error| AuthError::Wallet(error.to_string()))?;
              let _lockfile = acquire_wallet_lock(&config.state_dir)?;
              let wallet = load_wallet(&config, Vec::new())?;
@@ -3062,7 +3253,7 @@ index 6b0305d..2334584 100644
              wallet.clear_pending_request()?;
              Ok(())
          })
-@@ -1703,16 +2106,15 @@ impl AuthService {
+@@ -1703,16 +2168,15 @@ impl AuthService {
          &self,
          client_request_id: &str,
      ) -> Result<OpenRouterLeaseStatusResponse, AuthError> {
@@ -3082,7 +3273,7 @@ index 6b0305d..2334584 100644
              .json()
              .await
              .map_err(|error| AuthError::Serialization(error.to_string()))
-@@ -1722,12 +2124,10 @@ impl AuthService {
+@@ -1722,12 +2186,10 @@ impl AuthService {
          &self,
          client_request_id: &str,
      ) -> Result<Option<OpenRouterLeaseStatusResponse>, AuthError> {
@@ -3097,7 +3288,7 @@ index 6b0305d..2334584 100644
              .send()
              .await
              .map_err(|error| AuthError::Wallet(error.to_string()))?;
-@@ -1736,7 +2136,7 @@ impl AuthService {
+@@ -1736,7 +2198,7 @@ impl AuthService {
          }
          let response = response
              .error_for_status()
@@ -3106,7 +3297,7 @@ index 6b0305d..2334584 100644
          response
              .json()
              .await
-@@ -1748,16 +2148,15 @@ impl AuthService {
+@@ -1748,16 +2210,15 @@ impl AuthService {
          &self,
          client_request_id: &str,
      ) -> Result<RecoveryResponseV2, AuthError> {
@@ -3126,7 +3317,7 @@ index 6b0305d..2334584 100644
              .json()
              .await
              .map_err(|error| AuthError::Serialization(error.to_string()))
-@@ -1767,17 +2166,16 @@ impl AuthService {
+@@ -1767,17 +2228,16 @@ impl AuthService {
          &self,
          nullifier: &Felt252,
      ) -> Result<RecoveryResponseV2, AuthError> {
@@ -3147,7 +3338,7 @@ index 6b0305d..2334584 100644
              .json()
              .await
              .map_err(|error| AuthError::Serialization(error.to_string()))
-@@ -1787,7 +2185,7 @@ impl AuthService {
+@@ -1787,24 +2247,37 @@ impl AuthService {
          &self,
          client_request_id: &str,
      ) -> Result<(), AuthError> {
@@ -3156,8 +3347,22 @@ index 6b0305d..2334584 100644
          if request.client_request_id != client_request_id {
              return Err(AuthError::LeasePending(
                  "pending proof does not match the rejected OpenRouter lease".to_string(),
-@@ -1795,16 +2193,15 @@ impl AuthService {
+             ));
          }
++        self.retire_direct_request(&request).await
++    }
++
++    async fn retire_direct_request(&self, request: &ApiRequestV2) -> Result<(), AuthError> {
++        if self.try_retire_direct_request(request, true).await? {
++            return Ok(());
++        }
++        Err(AuthError::LeasePending("key usage is not finalized yet; the saved request is preserved".into()))
++    }
++
++    // False means only an explicit HTTP lease_pending response. A finalized
++    // status without a verifiable receipt must never trigger issuance replay.
++    async fn try_retire_direct_request(&self, request: &ApiRequestV2, wait: bool) -> Result<bool, AuthError> {
++        let client_request_id = &request.client_request_id;
          let deadline = Instant::now() + DIRECT_LEASE_RETIRE_MAX_WAIT;
          let status = loop {
 -            let response = self
@@ -3176,7 +3381,50 @@ index 6b0305d..2334584 100644
              let http_status = response.status();
              let body = response
                  .text()
-@@ -1903,6 +2300,7 @@ impl AuthService {
+@@ -1815,15 +2288,13 @@ impl AuthService {
+                     .map_err(|error| AuthError::Serialization(error.to_string()))?;
+             }
+             if let Ok(error) = serde_json::from_str::<ErrorResponse>(&body) {
+-                if error.retriable && Instant::now() + DIRECT_LEASE_RETIRE_POLL_INTERVAL < deadline
++                if wait && error.retriable && Instant::now() + DIRECT_LEASE_RETIRE_POLL_INTERVAL < deadline
+                 {
+                     tokio::time::sleep(DIRECT_LEASE_RETIRE_POLL_INTERVAL).await;
+                     continue;
+                 }
+                 if error.error_code == "lease_pending" {
+-                    return Err(AuthError::LeasePending(format!(
+-                        "lease {client_request_id} usage is not finalized yet"
+-                    )));
++                    return Ok(false);
+                 }
+                 return Err(AuthError::Wallet(format!(
+                     "{}: {}",
+@@ -1832,18 +2303,22 @@ impl AuthService {
+             }
+             return Err(AuthError::Wallet(format!("HTTP {http_status}: {body}")));
+         };
++        if status.client_request_id != *client_request_id {
++            return Err(AuthError::Wallet("retirement response belongs to another request".into()));
++        }
+         if status.status != "finalized" {
+             return Err(AuthError::LeasePending(format!(
+                 "lease {} was not finalized during retirement",
+                 status.client_request_id
+             )));
+         }
+-        if !self.recover().await?.recovered {
++        let recovered = self.recover().await?;
++        if !recovered.recovered && recovered.wallet.pending_request {
+             return Err(AuthError::LeasePending(format!(
+                 "lease {client_request_id} retired but its wallet update is not recoverable"
+             )));
+         }
+-        Ok(())
++        Ok(true)
+     }
+
+     async fn finish_direct_openrouter_lease(&self, client_request_id: String) {
+@@ -1903,6 +2378,7 @@ impl AuthService {
          self.ensure_scheme_agreement().await?;
          let config = self.config.clone();
          let wallet_mutex = self.wallet_mutex.clone();
@@ -3184,7 +3432,7 @@ index 6b0305d..2334584 100644
          let indexer = self.indexer.clone();
          let trusted_roots = self.trusted_roots();
          spawn_blocking(move || {
-@@ -1911,6 +2309,7 @@ impl AuthService {
+@@ -1911,6 +2387,7 @@ impl AuthService {
                  .map_err(|err| AuthError::Wallet(err.to_string()))?;
              let _lockfile = acquire_wallet_lock(&config.state_dir)?;
              let mut wallet = load_wallet(&config, trusted_roots)?;
@@ -3192,7 +3440,7 @@ index 6b0305d..2334584 100644
              let payload = serde_json::to_string(&request)
                  .map_err(|err| AuthError::Serialization(err.to_string()))?;
              let payload_hash = hash_payload(&payload);
-@@ -1918,7 +2317,9 @@ impl AuthService {
+@@ -1918,7 +2395,9 @@ impl AuthService {
 
              runtime.block_on(async move {
                  if wallet.has_pending_request() {
@@ -3203,7 +3451,7 @@ index 6b0305d..2334584 100644
                  }
 
                  let note_id = wallet.state().ok_or(AuthError::NoActiveNote)?.note_id;
-@@ -2033,6 +2434,7 @@ impl AuthService {
+@@ -2033,6 +2512,7 @@ impl AuthService {
                  .map_err(|err| AuthError::Wallet(err.to_string()))?;
              let _lockfile = acquire_wallet_lock(&config.state_dir)?;
              let wallet = load_wallet(&config, trusted_roots)?;
@@ -3211,7 +3459,7 @@ index 6b0305d..2334584 100644
              let runtime = current_thread_runtime()?;
 
              runtime.block_on(async move {
-@@ -2164,8 +2566,7 @@ impl AuthService {
+@@ -2164,8 +2644,7 @@ impl AuthService {
                  "deployment does not advertise an RPC URL for withdrawal confirmation".to_string(),
              )
          })?;
@@ -3221,7 +3469,7 @@ index 6b0305d..2334584 100644
              .post(rpc_url)
              .json(&serde_json::json!({
                  "jsonrpc": "2.0",
-@@ -2397,7 +2798,7 @@ fn hash_payload(payload: &str) -> Felt252 {
+@@ -2397,7 +2876,7 @@ fn hash_payload(payload: &str) -> Felt252 {
      compute_payload_hash(payload.as_bytes())
  }
 
@@ -3230,7 +3478,7 @@ index 6b0305d..2334584 100644
      SystemTime::now()
          .duration_since(UNIX_EPOCH)
          .unwrap_or_default()
-@@ -2674,7 +3075,18 @@ fn load_wallet(
+@@ -2674,7 +3153,18 @@ fn load_wallet(
      config: &AuthConfig,
      trusted_epoch_roots: Vec<EpochRoots>,
  ) -> Result<Wallet, AuthError> {
@@ -3250,7 +3498,7 @@ index 6b0305d..2334584 100644
  }
 
  fn acquire_wallet_lock(state_dir: &Path) -> Result<std::fs::File, AuthError> {
-@@ -2917,7 +3329,7 @@ mod wallet_lifecycle_tests {
+@@ -2917,7 +3407,7 @@ mod wallet_lifecycle_tests {
 
      #[tokio::test]
      async fn low_balance_note_is_preserved_and_active_slot_is_cleared() {
@@ -3259,7 +3507,7 @@ index 6b0305d..2334584 100644
 
          let retired = service
              .retire_low_balance_note()
-@@ -2926,22 +3338,22 @@ mod wallet_lifecycle_tests {
+@@ -2926,22 +3416,22 @@ mod wallet_lifecycle_tests {
              .expect("low-balance note should be retired");
 
          assert_eq!(retired.note_id, 18);
@@ -3286,7 +3534,7 @@ index 6b0305d..2334584 100644
          PendingRequestJournal::write(
              &pending_directory.path().join("pending_journal.json"),
              &PendingRequestJournal {
-@@ -3346,3 +3758,516 @@ mod tests {
+@@ -3346,3 +3836,820 @@ mod tests {
          assert!(!commitment.is_zero());
      }
  }
@@ -3802,6 +4050,310 @@ index 6b0305d..2334584 100644
 +            server.abort();
 +        }
 +    }
++}
++
++
++#[cfg(test)]
++mod oa_interrupted_provisioning_tests {
++    use super::*;
++    use sha2::{Digest, Sha256};
++    use axum::{extract::State, routing::{get, post}, Json, Router};
++    use serde_json::json;
++    use zkapi_client::journal::PendingRequestJournal;
++    use zkapi_proof::compact::{rerandomize, server_update, CompactSigner};
++    use zkapi_types::wire::CurvePointWire;
++
++    struct Replies {
++        request: Value,
++        key: Value,
++        lease: Value,
++        response: RequestResponseV2,
++        finalized: bool,
++        reject: bool,
++        settle_cancels: bool,
++        unavailable: bool,
++        withhold_receipt: bool,
++        replay_lost_key: bool,
++        verifier_valid: bool,
++        events: Vec<&'static str>,
++    }
++    async fn fixture() -> (tempfile::TempDir, Arc<AuthService>, Arc<Mutex<Replies>>, tokio::task::JoinHandle<()>) {
++        let directory = tempfile::tempdir().unwrap();
++        let signer = CompactSigner::from_seed(&Felt252::from_u64(99));
++        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let url = format!("http://{}", listener.local_addr().unwrap());
++        let config = AuthConfig {
++            state_dir: directory.path().to_path_buf(), protocol_version: 2, chain_id: 1,
++            request_charge_cap: 400_000, state_signing_key: signer.public_key(),
++            protocol_server_url: url.clone(), oa_verifier_url: url.clone(),
++            openrouter_inference_base: "https://openrouter.ai/api/v1".into(),
++            request_mode: RequestMode::DirectOpenrouter, require_oa_org_key_source: true,
++            billing_asset: "native_eth".into(), billing_unit: "gwei".into(),
++            native_asset_wei_per_unit: "1000000000".into(),
++            native_price_feed_address: format!("0x{}", "12".repeat(20)),
++            ..Default::default()
++        };
++        let mut wallet = load_wallet(&config, Vec::new()).unwrap();
++        wallet.confirm_deposit(Felt252::from_u64(42), 7, 1_500_000, 4_000_000_000).unwrap();
++        let note = wallet.state().unwrap();
++        let nullifier = core_v2::nullifier(&note.secret_s, &note.current_anchor);
++        let anonymous = rerandomize(&CurvePointWire {
++            x: note.current_commitment_x, y: note.current_commitment_y,
++        }, &Felt252::ONE).unwrap();
++        // This intentionally expired quote must be replayed byte-for-byte.
++        let quote = json!({"asset":"native_eth","units_per_eth":1_000_000_000,"chain_id":1,
++            "feed_address":config.native_price_feed_address,"round_id":"123","answer":"250000000000",
++            "decimals":8,"updated_at":1,"expires_at":3601});
++        let payload = json!({"mode":"openrouter_ephemeral_lease","version":1,"billing_quote":quote}).to_string();
++        let request = ApiRequestV2 {
++            client_request_id: "interrupted".into(), payload_hash: compute_payload_hash(payload.as_bytes()), payload,
++            public_inputs: zkapi_types::RequestPublicInputsV2 {
++                protocol_version:2, chain_id:1, contract_address:config.contract_address, active_root:Felt252::ZERO,
++                state_signing_key_x:config.state_signing_key.x, state_signing_key_y:config.state_signing_key.y,
++                request_time:1, solvency_bound:400_000, request_nullifier:nullifier, authorization_tag:Felt252::ONE,
++                anonymous_commitment_x:anonymous.x, anonymous_commitment_y:anonymous.y,
++            },
++            proof: Groth16ProofWire {backend:zkapi_types::wire::ProofBackendWire::Groth16Bn254, proof:"saved-proof-only".into()},
++        };
++        PendingRequestJournal::write(&config.state_dir.join("pending_journal.json"), &PendingRequestJournal {
++            exists:true, client_request_id:request.client_request_id.clone(), nullifier,
++            payload_hash:request.payload_hash, user_rerandomization:Felt252::ONE, created_at_ms:1,
++            prepared_request:Some(request.clone()),
++        }).unwrap();
++        let next_commitment = server_update(&anonymous, 0, &Felt252::ONE).unwrap();
++        let next_anchor = Felt252::from_u64(123);
++        let message = core_v2::state_message(note.protocol_version, note.chain_id,
++            &note.contract_address, &next_commitment.x, &next_commitment.y, &next_anchor);
++        let settled_payload = json!({"type":"oa_org_unissued_lease_cancellation", "billing_quote":quote}).to_string();
++        let response = RequestResponseV2 {
++            status:"finalized".into(), client_request_id:request.client_request_id.clone(), request_nullifier:nullifier,
++            response_code:200, response_hash:zkapi_types::canonical_response_hash(settled_payload.as_bytes()),
++            response_payload:settled_payload, charge_applied:0, next_commitment, next_anchor,
++            blind_delta_srv:Felt252::ONE, next_state_signature:signer.sign(&message),
++            policy_reason_code:None, policy_evidence_hash:None,
++        };
++        let expires = now_seconds()+300;
++        let lease = json!({"status":"provisioning","client_request_id":"interrupted","issued_at":1,
++            "expires_at":expires,"settle_after":expires+5,"spending_limit_usd":1.0});
++        let mut key = lease.clone();
++        key["status"] = json!("active"); key["api_key"] = json!("private-recovered-key");
++        key["openrouter_api_base"] = json!(config.openrouter_inference_base);
++        key["valid_for_seconds"] = json!(300); key["billing_quote"] = quote;
++        key["key_source"] = json!("oa_org");
++        key["verification"] = json!({"station_id":"test-station","key_valid_till":expires,
++            "station_signature":"synthetic-signature","org_signature":"synthetic-org-signature","verifier_url":url});
++        let replies = Arc::new(Mutex::new(Replies {
++            request:serde_json::to_value(request).unwrap(), key, lease, response,
++            finalized:false, reject:false, settle_cancels:false, unavailable:false, withhold_receipt:false, replay_lost_key:false, verifier_valid:true, events:Vec::new(),
++        }));
++        let router = Router::new()
++            .route("/v2/openrouter/leases/interrupted", get(|State(state):State<Arc<Mutex<Replies>>>|async move {
++                let mut state=state.lock().unwrap(); state.events.push("status"); Json(state.lease.clone())
++            }).post(|State(state):State<Arc<Mutex<Replies>>>,Json(request):Json<Value>|async move {
++                let mut state=state.lock().unwrap(); assert_eq!(request,state.request);
++                state.events.push("retire");
++                if state.lease["status"]=="provisioning" && !state.settle_cancels {
++                    return (axum::http::StatusCode::CONFLICT,Json(json!({"status":"error","client_request_id":"interrupted","error_code":"lease_pending","error_message":"provisioning","retriable":true})));
++                }
++                state.finalized=true; state.lease["status"]=json!("finalized");
++                (axum::http::StatusCode::OK,Json(state.lease.clone()))
++            }))
++            .route("/v2/openrouter/leases", post(|State(state):State<Arc<Mutex<Replies>>>,Json(request):Json<Value>|async move {
++                let mut state=state.lock().unwrap(); assert_eq!(request,state.request);
++                state.events.push("replay");
++                if state.unavailable {
++                    if state.replay_lost_key {state.lease["status"]=json!("active");}
++                    (axum::http::StatusCode::SERVICE_UNAVAILABLE,Json(json!({"status":"error","client_request_id":"interrupted","error_code":"unavailable","error_message":"ambiguous provider response","retriable":true})))
++                } else if state.reject {
++                    state.finalized=true; state.lease["status"]=json!("finalized");
++                    (axum::http::StatusCode::BAD_REQUEST,Json(json!({"status":"error","client_request_id":"interrupted","error_code":"oa_key_policy_rejected","error_message":"policy rejection","retriable":false})))
++                } else {
++                    state.lease["status"]=json!("active");
++                    (axum::http::StatusCode::OK,Json(state.key.clone()))
++                }
++            }))
++            .route("/submit_key", post(|State(state):State<Arc<Mutex<Replies>>>,Json(request):Json<Value>|async move {
++                let mut state=state.lock().unwrap(); state.events.push("verify");
++                assert_eq!(request["api_key"],"private-recovered-key");
++                let hash = format!("{:x}",Sha256::digest(b"private-recovered-key"));
++                Json(json!({"status":"verified","station_id":"test-station",
++                    "key_hash":if state.verifier_valid {hash[..16].to_string()} else {"00".repeat(8)}}))
++            }))
++            .route("/v2/requests/interrupted", get(|State(state):State<Arc<Mutex<Replies>>>|async move {
++                let mut state=state.lock().unwrap(); state.events.push("recover");
++                Json(if state.finalized && !state.withhold_receipt {json!({"status":"finalized","nullifier_status":"finalized","request_response":state.response})}
++                    else {json!({"status":"pending","nullifier_status":"reserved"})})
++            }))
++            .with_state(replies.clone());
++        let server=tokio::spawn(async move {axum::serve(listener,router).await.unwrap()});
++        let service=AuthService::new(config).unwrap();
++        (directory, service, replies, server)
++    }
++
++    #[tokio::test]
++    async fn provisioning_settlement_replays_verifies_and_retires_without_exposing_key() {
++        let (directory,service,replies,server)=fixture().await;
++        let status=service.settle_for_withdrawal().await.unwrap();
++        assert!(!status.pending_request);
++        assert_eq!(status.note.unwrap().current_balance,1_500_000);
++        assert_eq!(replies.lock().unwrap().events, ["status","retire","replay","verify","retire","recover"]);
++        assert!(service.direct_lease.lock().await.is_none());
++        assert!(!directory.path().join("oa-issued-leases").exists());
++        assert!(!directory.path().join("pending_journal.json").exists());
++        assert!(!std::fs::read_to_string(directory.path().join("note_state.json")).unwrap().contains("private-recovered-key"));
++        server.abort();
++    }
++
++    #[tokio::test]
++    async fn cancellation_is_installed_only_from_the_matching_signed_response() {
++        for failure in ["none","identity","signature","quote"] {
++            let (directory,service,replies,server)=fixture().await;
++            let before=std::fs::read(directory.path().join("pending_journal.json")).unwrap();
++            {
++                let mut replies=replies.lock().unwrap(); replies.reject=true;
++                match failure {
++                    "identity"=>replies.response.client_request_id="other".into(),
++                    "signature"=>replies.response.next_state_signature.s=Felt252::ZERO,
++                    "quote"=>{replies.response.response_payload="{}".into();replies.response.response_hash=zkapi_types::canonical_response_hash(b"{}");},
++                    _=>(),
++                }
++            }
++            let result=service.settle_for_withdrawal().await;
++            if failure=="none" {
++                assert!(!result.unwrap().pending_request);
++                assert!(!directory.path().join("pending_journal.json").exists());
++            } else {
++                assert!(result.is_err(),"{failure}");
++                assert_eq!(std::fs::read(directory.path().join("pending_journal.json")).unwrap(),before);
++            }
++            assert_eq!(replies.lock().unwrap().events,["status","retire","replay","recover"]);
++            assert!(service.direct_lease.lock().await.is_none());
++            server.abort();
++        }
++    }
++
++    #[tokio::test]
++    async fn invalid_replayed_key_preserves_authorization_without_retirement_or_inference() {
++        for failure in ["identity","cap","quote","origin","evidence","verifier"] {
++            let (directory,service,replies,server)=fixture().await;
++            let journal=std::fs::read(directory.path().join("pending_journal.json")).unwrap();
++            let note=std::fs::read(directory.path().join("note_state.json")).unwrap();
++            {
++                let mut replies=replies.lock().unwrap();
++                match failure {
++                    "identity"=>replies.key["client_request_id"]=json!("other"),
++                    "cap"=>replies.key["spending_limit_usd"]=json!(20.0),
++                    "quote"=>replies.key["billing_quote"]["round_id"]=json!("124"),
++                    "origin"=>replies.key["openrouter_api_base"]=json!("https://other.example/api/v1"),
++                    "evidence"=>replies.key["verification"]=Value::Null,
++                    _=>replies.verifier_valid=false,
++                }
++            }
++            assert!(service.settle_for_withdrawal().await.is_err(),"{failure}");
++            let replies=replies.lock().unwrap();
++            assert_eq!(replies.events.iter().filter(|event| **event=="retire").count(),1);
++            assert!(!replies.events.contains(&"recover"));
++            assert_eq!(std::fs::read(directory.path().join("pending_journal.json")).unwrap(),journal);
++            assert_eq!(std::fs::read(directory.path().join("note_state.json")).unwrap(),note);
++            assert!(service.direct_lease.lock().await.is_none());
++            assert!(!directory.path().join("oa-issued-leases").exists());
++            server.abort();
++        }
++    }
++
++    #[tokio::test]
++    async fn initial_policy_rejection_installs_cancellation_without_retrying_issuance() {
++        let (directory,service,replies,server)=fixture().await;
++        replies.lock().unwrap().reject=true;
++        assert!(service.issue_direct_openrouter_lease("initial".into(),Some(1_000_000)).await.is_err());
++        assert_eq!(replies.lock().unwrap().events,["replay","recover"]);
++        assert!(!directory.path().join("pending_journal.json").exists());
++        assert!(service.direct_lease.lock().await.is_none());
++        server.abort();
++    }
++
++    #[tokio::test]
++    async fn server_side_cancellation_does_not_replay_or_verify_a_key() {
++        let (directory,service,replies,server)=fixture().await;
++        replies.lock().unwrap().settle_cancels=true;
++        assert!(!service.settle_for_withdrawal().await.unwrap().pending_request);
++        assert_eq!(replies.lock().unwrap().events,["status","retire","recover"]);
++        assert!(!directory.path().join("pending_journal.json").exists());
++        assert!(service.direct_lease.lock().await.is_none());
++        server.abort();
++    }
++
++    #[tokio::test]
++    async fn ambiguous_provisioning_preserves_the_original_request_and_note() {
++        let (directory,service,replies,server)=fixture().await;
++        replies.lock().unwrap().unavailable=true;
++        let journal=std::fs::read(directory.path().join("pending_journal.json")).unwrap();
++        let note=std::fs::read(directory.path().join("note_state.json")).unwrap();
++        assert!(matches!(service.settle_for_withdrawal().await,Err(AuthError::LeasePending(_))));
++        assert_eq!(replies.lock().unwrap().events,["status","retire","replay","recover","status"]);
++        assert_eq!(std::fs::read(directory.path().join("pending_journal.json")).unwrap(),journal);
++        assert_eq!(std::fs::read(directory.path().join("note_state.json")).unwrap(),note);
++        assert!(service.direct_lease.lock().await.is_none());
++        server.abort();
++    }
++
++
++    #[tokio::test]
++    async fn concurrent_settlements_replay_once_and_finalized_without_key_recovers() {
++        let (_directory,service,replies,server)=fixture().await;
++        let (first,second)=tokio::join!(service.settle_for_withdrawal(),service.settle_for_withdrawal());
++        assert!(!first.unwrap().pending_request);
++        assert!(!second.unwrap().pending_request);
++        assert_eq!(replies.lock().unwrap().events,["status","retire","replay","verify","retire","recover"]);
++        server.abort();
++
++        let (directory,service,replies,server)=fixture().await;
++        {
++            let mut replies=replies.lock().unwrap();
++            replies.finalized=true; replies.lease["status"]=json!("finalized");
++            // Lease metadata has no key_hash, plaintext key or provider receipt.
++        }
++        assert!(!service.settle_for_withdrawal().await.unwrap().pending_request);
++        assert_eq!(replies.lock().unwrap().events,["status","recover"]);
++        assert!(!directory.path().join("pending_journal.json").exists());
++        server.abort();
++    }
++
++
++    #[tokio::test]
++    async fn finalized_retirement_without_signed_receipt_never_replays_issuance() {
++        let (directory,service,replies,server)=fixture().await;
++        {
++            let mut replies=replies.lock().unwrap();
++            replies.settle_cancels=true; replies.withhold_receipt=true;
++        }
++        let journal=std::fs::read(directory.path().join("pending_journal.json")).unwrap();
++        let note=std::fs::read(directory.path().join("note_state.json")).unwrap();
++        assert!(matches!(service.settle_for_withdrawal().await,Err(AuthError::LeasePending(_))));
++        assert_eq!(replies.lock().unwrap().events,["status","retire","recover"]);
++        assert_eq!(std::fs::read(directory.path().join("pending_journal.json")).unwrap(),journal);
++        assert_eq!(std::fs::read(directory.path().join("note_state.json")).unwrap(),note);
++        replies.lock().unwrap().withhold_receipt=false;
++        assert!(!service.settle_for_withdrawal().await.unwrap().pending_request);
++        assert_eq!(replies.lock().unwrap().events,["status","retire","recover","status","recover"]);
++        server.abort();
++    }
++
++    #[tokio::test]
++    async fn failed_replay_with_active_server_metadata_retires_without_a_local_key() {
++        let (directory,service,replies,server)=fixture().await;
++        {
++            let mut replies=replies.lock().unwrap();
++            replies.unavailable=true; replies.replay_lost_key=true;
++        }
++        assert!(!service.settle_for_withdrawal().await.unwrap().pending_request);
++        assert_eq!(replies.lock().unwrap().events,["status","retire","replay","recover","status","retire","recover"]);
++        assert!(service.direct_lease.lock().await.is_none());
++        assert!(!directory.path().join("oa-issued-leases").exists());
++        assert!(!directory.path().join("pending_journal.json").exists());
++        server.abort();
++    }
++
 +}
 diff --git a/crates/zkapi-clientd/tests/direct_openrouter.rs b/crates/zkapi-clientd/tests/direct_openrouter.rs
 index 87d6577..32f113e 100644

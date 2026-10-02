@@ -5,6 +5,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -103,7 +104,7 @@ func TestConfigureNewDefaultsAndExplicitChoicesDoNotAsk(t *testing.T) {
 			called := false
 			err := configure(context.Background(), dir, test.args, ui, &output, func(_ context.Context, gotDir string, c config.Config, action string, _ setupPrompter, _ io.Writer) error {
 				called = true
-				if gotDir != dir || action != "setup" || c.Backend != test.mode || c.ZKAPI.Network != test.network || c.ManagementToken == "" || c.RelayURL != "" || c.KeyReuseWindowSeconds != 60 {
+				if gotDir != dir || action != "setup" || c.Backend != test.mode || c.ZKAPI.Network != test.network || c.VerifierURL != config.DefaultVerifierURL(test.network) || c.ManagementToken == "" || c.RelayURL != "" || c.KeyReuseWindowSeconds != 60 {
 					t.Fatal("wrong setup profile")
 				}
 				for _, secret := range []string{c.APIKey, c.ZKAPI.BridgeToken, c.ManagementToken} {
@@ -120,7 +121,7 @@ func TestConfigureNewDefaultsAndExplicitChoicesDoNotAsk(t *testing.T) {
 				t.Fatal("default setup asked a question before its funding action")
 			}
 			loaded, err := config.Load(dir)
-			if err != nil || loaded.Backend != test.mode || loaded.ZKAPI.Network != test.network {
+			if err != nil || loaded.Backend != test.mode || loaded.ZKAPI.Network != test.network || loaded.VerifierURL != config.DefaultVerifierURL(test.network) {
 				t.Fatal("selected configuration was not persisted", err)
 			}
 		})
@@ -174,6 +175,64 @@ func TestConfigureFlagsEditExistingWithoutQuestions(t *testing.T) {
 	})
 	if err != nil || !called {
 		t.Fatal("flag edit failed", err)
+	}
+}
+
+func TestConfigureNetworkEditsFollowDefaultVerifier(t *testing.T) {
+	for _, interactive := range []bool{false, true} {
+		for _, from := range []string{"mainnet", "sepolia"} {
+			for _, custom := range []bool{false, true} {
+				name := fmt.Sprintf("interactive=%t/from=%s/custom=%t", interactive, from, custom)
+				t.Run(name, func(t *testing.T) {
+					c, err := config.Default()
+					if err != nil {
+						t.Fatal(err)
+					}
+					c = config.SelectNetwork(c, from)
+					if custom {
+						c.VerifierURL = "https://custom-verifier.example"
+					}
+					dir := filepath.Join(t.TempDir(), "profile")
+					if err := config.Init(dir, c); err != nil {
+						t.Fatal(err)
+					}
+					c, err = config.Load(dir)
+					if err != nil {
+						t.Fatal(err)
+					}
+					to := "sepolia"
+					if from == to {
+						to = "mainnet"
+					}
+					args := []string{"--network", to}
+					ui := &startTestUI{}
+					if interactive {
+						args = []string{"--edit"}
+						ui.answers = []string{to, c.Listen, "direct"}
+					}
+					want := c
+					want.ZKAPI.Network = to
+					if !custom {
+						want.VerifierURL = config.DefaultVerifierURL(to)
+					}
+					called := false
+					err = configure(context.Background(), dir, args, ui, io.Discard, func(_ context.Context, _ string, got config.Config, _ string, _ setupPrompter, _ io.Writer) error {
+						called = true
+						if got != want {
+							t.Fatal("network edit changed credentials/custom verifier or kept previous default")
+						}
+						return nil
+					})
+					if err != nil || !called {
+						t.Fatal("network edit failed", err)
+					}
+					loaded, err := config.Load(dir)
+					if err != nil || loaded != want {
+						t.Fatal("network edit did not save selected verifier", err)
+					}
+				})
+			}
+		}
 	}
 }
 

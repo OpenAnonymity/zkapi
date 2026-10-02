@@ -81,7 +81,7 @@ func TestCachedKeyRevalidatesModelPolicyAndKeepsExactBudget(t *testing.T) {
 			client.config.KeyReuseWindow = time.Minute
 			previous := client.inference.Transport
 			client.inference.Transport = budgetTransport(func(r *http.Request) (*http.Response, error) {
-				if r.URL.Host != "org-staging.openanonymity.ai" {
+				if r.URL.Host != "org-live.openanonymity.ai" {
 					return previous.RoundTrip(r)
 				}
 				cost := 1

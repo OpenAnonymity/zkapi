@@ -53,6 +53,9 @@ pub enum ServerError {
     )]
     LeaseSettlementPending { retry_after_seconds: u64 },
 
+    #[error("OA org rejected the key allowance or duration; recover the saved request")]
+    OaKeyPolicyRejected,
+
     #[error(
         "OA org key issuance was rate limited ({reason}); retry after {retry_after_seconds} seconds"
     )]
@@ -80,6 +83,7 @@ impl ServerError {
             ServerError::ProtocolMismatch(_) => "protocol_mismatch",
             ServerError::LeasePending => "lease_pending",
             ServerError::LeaseSettlementPending { .. } => "lease_settlement_pending",
+            ServerError::OaKeyPolicyRejected => "oa_key_policy_rejected",
             ServerError::OaRateLimited { reason, .. } => reason,
         }
     }
@@ -101,6 +105,7 @@ impl ServerError {
             ServerError::ProtocolMismatch(_) => false,
             ServerError::LeasePending => true,
             ServerError::LeaseSettlementPending { .. } => true,
+            ServerError::OaKeyPolicyRejected => false,
             ServerError::OaRateLimited { .. } => true,
         }
     }
