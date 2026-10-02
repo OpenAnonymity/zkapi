@@ -72,9 +72,10 @@ type Config struct {
 	Listen                string `json:"listen"`
 	APIKey                string `json:"api_key"`
 	KeyReuseWindowSeconds int    `json:"key_reuse_window_seconds"`
-	RequireAPIKey         bool   `json:"require_api_key"`   // opt in to bearer authentication for loopback inference
-	Backend               string `json:"backend"`           // fixed to zkapi; retained for existing profile compatibility
-	OrgURL                string `json:"org_url,omitempty"` // legacy profile field; unused
+	LeCoreContextRecall   bool   `json:"lecore_context_recall"` // opt in to local context retrieval before paid inference
+	RequireAPIKey         bool   `json:"require_api_key"`       // opt in to bearer authentication for loopback inference
+	Backend               string `json:"backend"`               // fixed to zkapi; retained for existing profile compatibility
+	OrgURL                string `json:"org_url,omitempty"`     // legacy profile field; unused
 	VerifierURL           string `json:"verifier_url"`
 	RelayURL              string `json:"relay_url"` // empty uses direct HTTPS; nonempty selects Wisp or loopback SOCKS5
 	Concurrency           int    `json:"concurrency"`
