@@ -19,3 +19,11 @@
 /zkapi-clientd/zkapi-clientd
 /zkapi-clientd/build/
 /zkapi-clientd/dist/
+
+# Wallet/config home and local build staging — never commit private keys
+.config/
+staged/
+out*.txt
+resp-*.json
+*-body.json
+models.json
