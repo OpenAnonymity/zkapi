@@ -35,7 +35,7 @@ func (c *Client) modelPolicyJSON(ctx context.Context, path string, value any) er
 	if err != nil {
 		return err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(deployment.Privacy.IssuerURL, "/")+path, nil)
 	if err != nil {
@@ -140,7 +140,7 @@ func untieredModelBudget(id string) uint64 {
 }
 
 func (c *Client) publicModelIDs(ctx context.Context) (map[string]bool, error) {
-	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.config.InferenceBaseURL+"/models", nil)
 	if err != nil {

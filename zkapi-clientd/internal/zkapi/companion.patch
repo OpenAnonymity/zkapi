@@ -2881,7 +2881,7 @@ index 6b0305d..5a46cd4 100644
 +            self.config.chain_id, &self.config.protocol_server_url, reqwest::Method::POST,
 +            format!("{}/v2/openrouter/leases", self.config.protocol_server_url.trim_end_matches('/')),
 +        )?
-+            .timeout(Duration::from_secs(15))
++            .timeout(Duration::from_secs(60))
 +            .json(request)
 +            .send()
 +            .await;
@@ -3083,7 +3083,7 @@ index 6b0305d..5a46cd4 100644
 +        // Each attempt has fresh TLS state. Use a bounded verifier timeout;
 +        // transport failure is availability evidence, never successful verification.
 +        let response = fresh_private_http()?.post(format!("{expected_verifier}/submit_key"))
-+            .timeout(Duration::from_secs(5))
++            .timeout(Duration::from_secs(30))
 +            .json(&serde_json::json!({
 +                "station_id": evidence.station_id, "api_key": api_key,
 +                "key_valid_till": evidence.key_valid_till,

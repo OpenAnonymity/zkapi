@@ -118,7 +118,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.URL.Path == "/v1/models" && r.Method == http.MethodGet:
-		ctx, cancel := context.WithTimeout(r.Context(), time.Minute)
+		ctx, cancel := context.WithTimeout(r.Context(), 3*time.Minute)
 		defer cancel()
 		data, err := a.backend.Models(ctx)
 		if err != nil {
