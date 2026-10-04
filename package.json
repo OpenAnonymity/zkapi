@@ -13,7 +13,8 @@
     "test": "npm run test:sdk",
     "test:sdk": "node --test sdk/test/*.test.mjs",
     "test:e2e:v2": "bash scripts/run-v2-acceptance.sh",
-    "verify:assets": "node scripts/sync-sdk-assets.mjs --check"
+    "verify:assets": "node scripts/sync-sdk-assets.mjs --check",
+    "verify:poseidon": "node scripts/generate-poseidon.mjs --check"
   },
   "devDependencies": {
     "esbuild": "0.27.2"
