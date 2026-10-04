@@ -84,6 +84,9 @@ jobs:
       - name: Install Foundry
         uses: foundry-rs/foundry-toolchain@v1
 
+      - name: Check the generated Poseidon library
+        run: node scripts/generate-poseidon.mjs --check
+
       - name: Forge build
         working-directory: protocol/contracts
         run: forge build
